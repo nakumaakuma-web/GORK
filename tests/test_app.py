@@ -61,6 +61,85 @@ class Tests(unittest.TestCase):
     def tearDownClass(cls):
         cls.app.shutdown();cls.mock.shutdown()
 
+    def test_video_analysis_completes_missing_fields_before_done(self):
+        img='data:image/jpeg;base64,'+base64.b64encode(b'missing-video-test').decode()
+        payload={'kind':'video','depth':'fast','target':'FramePack F1',
+                 'images':[{'time':'0.5','data':img},{'time':'1.5','data':img}]}
+        sections='\n'.join('==='+k+'===\n'+(('English description of a woman standing in the scene.' if k.endswith('_EN') else 'Женщина стоит в комнате в мягком освещении.') if not k.startswith('FRAMEPACK') and k!='TIMELINE_RU' else '') for k in app.FIELDS)
+        repair=('===FRAMEPACK_RU===\nЖенщина меняет положение головы при сохранении позы.\n'
+                '===FRAMEPACK_EN===\nThe woman changes her head orientation while holding her pose.\n'
+                '===TIMELINE_RU===\n0.50 с: прямо. 1.50 с: голова повернута.\n')
+        replies=iter(['Первый кадр: прямо, второй: поворот головы.',sections,repair])
+        with patch.object(app,'_llama_request',side_effect=lambda *args,**kwargs: next(replies)) as mocked:
+            req=urllib.request.Request(self.url+'/api/analyze',data=json.dumps(payload).encode(),
+                                       headers={'Content-Type':'application/json'})
+            with urllib.request.urlopen(req,timeout=6) as resp:
+                events=[json.loads(x) for x in resp.read().decode().splitlines() if x.strip()]
+        self.assertEqual(events[-1]['event'],'done')
+        self.assertTrue(all(events[-1]['data']['sections'].get(k) for k in app.VIDEO_FIELDS))
+        self.assertEqual(mocked.call_count,3)
+        self.assertEqual(events[-1]['data']['frame_times'],['0.5','1.5'])
+
+    def test_video_repair_one_model_call_for_three_sections(self):
+        sections={'framepack_ru':'','framepack_en':'','timeline_ru':''}
+        answer=('===FRAMEPACK_RU===\nПерсонаж поворачивает голову на первом кадре.\n'
+                '===FRAMEPACK_EN===\nThe character turns their head between observed frames.\n'
+                '===TIMELINE_RU===\n0.50 с: фронтальная поза. 1.50 с: голова повёрнута.\n')
+        with patch.object(app,'_llama_request',return_value=answer) as mock:
+            flags=app.repair_video_fields(sections,'На первом кадре фронтально, на втором повернута голова.', ['0.5','1.5'])
+        self.assertEqual(mock.call_count,1)
+        self.assertTrue(all(sections.get(k) for k in app.VIDEO_FIELDS))
+        self.assertIn('0.50 с, 1.50 с',mock.call_args.args[0])
+        self.assertEqual(len(flags),3)
+
+    def test_video_repair_preserves_existing_and_fills_only_empty(self):
+        sections={'framepack_ru':'Существующий русский промпт.',
+                  'framepack_en':'', 'timeline_ru':''}
+        answer=('===FRAMEPACK_RU===\nНовый текст, который не должен заменить старый.\n'
+                '===FRAMEPACK_EN===\nThe person slowly turns toward the camera.\n'
+                '===TIMELINE_RU===\n1.00 с: персонаж стоит прямо.\n')
+        with patch.object(app,'_llama_request',return_value=answer):
+            app.repair_video_fields(sections,'Наблюдается поворот.', ['1.0'])
+        self.assertEqual(sections['framepack_ru'],'Существующий русский промпт.')
+        self.assertTrue(sections['framepack_en'])
+        self.assertTrue(sections['timeline_ru'])
+
+    def test_video_repair_endpoint_does_not_need_images(self):
+        body={'kind':'video','sections':{'framepack_ru':'','framepack_en':'','timeline_ru':''},
+              'source_analysis':'Первый кадр: персонаж прямо. Второй кадр: повернулся.',
+              'frame_times':['0.5','2.5']}
+        answer=('===FRAMEPACK_RU===\nПерсонаж поворачивается в кадре.\n'
+                '===FRAMEPACK_EN===\nThe person turns in frame.\n'
+                '===TIMELINE_RU===\n0.50 с: прямо. 2.50 с: повёрнут.\n')
+        with patch.object(app,'_llama_request',return_value=answer) as mock:
+            req=urllib.request.Request(self.url+'/api/video/repair',
+                     data=json.dumps(body).encode(),method='POST',
+                     headers={'Content-Type':'application/json','Origin':self.url})
+            with urllib.request.urlopen(req,timeout=5) as resp: data=json.load(resp)
+        self.assertEqual(mock.call_count,1)
+        self.assertEqual(data['missing'],[])
+        self.assertIn('The person turns',data['sections']['framepack_en'])
+
+    def test_video_repair_endpoint_rejects_remote_origin(self):
+        body={'kind':'video','sections':{},'source_analysis':'Описание'}
+        req=urllib.request.Request(self.url+'/api/video/repair',
+                 data=json.dumps(body).encode(),method='POST',
+                 headers={'Content-Type':'application/json','Origin':'https://evil.example'})
+        with self.assertRaises(urllib.error.HTTPError) as cm:urllib.request.urlopen(req,timeout=3)
+        self.assertEqual(cm.exception.code,403)
+
+    def test_video_repair_failure_does_not_fake_output(self):
+        sections={'framepack_ru':'','framepack_en':'','timeline_ru':''}
+        with patch.object(app,'_llama_request',return_value='Bad no headings English only'):
+            messages=app.repair_video_fields(sections,'Текст описания.')
+        self.assertFalse(any(sections.values()))
+        self.assertTrue(messages)
+
+    def test_import_and_repair_controls_exist(self):
+        ui=(Path(__file__).resolve().parents[1]/'ui'/'index.html').read_text(encoding='utf-8')
+        for name in ['repairVideo','importJson','importJsonFile']:
+            self.assertIn('id="'+name+'"',ui)
+
     def test_sections(self):
         txt = '===POSITIVE_RU===\nА\n===POSITIVE_EN===\nB'
         parsed = app.parse_sections(txt)
@@ -88,7 +167,7 @@ class Tests(unittest.TestCase):
         with urllib.request.urlopen(self.url + '/api/version') as response:
             version = json.load(response)['version']
         self.assertEqual(version, app.updater.VERSION)
-        self.assertEqual(version, '0.5.1')
+        self.assertEqual(version, '0.5.2')
 
     def test_home_health(self):
         with urllib.request.urlopen(self.url) as r:

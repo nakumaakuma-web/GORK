@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-VERSION = '0.5.1'
+VERSION = '0.5.2'
 CONFIG_NAME = 'update_config.json'
 DEFAULT_MANIFEST_URL = 'https://raw.githubusercontent.com/nakumaakuma-web/GORK/main/update-manifest.json'
 # Files deliberately limited; models, user data, saved results and configs untouched.

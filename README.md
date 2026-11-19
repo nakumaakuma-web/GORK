@@ -15,3 +15,7 @@ Local reverse prompting for still images and sampled video frames with an existi
 Fix language labels for Positive/Negative RU/EN with automatic validation, an isolated Qwen translation retry, and a fail-closed warning for repeated mismatches.
 
 Version 0.5.1: expanded live status monitor with elapsed time, frame ranges, stage history and truthful indeterminate progress bar.
+
+
+### Video-field repair (v0.5.2)
+When Qwen omits FramePack RU/EN or Timeline RU, Studio makes a separate text-only recovery call from its saved analysis. Existing results can be loaded from exported JSON and repaired without reprocessing video frames.

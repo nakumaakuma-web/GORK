@@ -7,7 +7,7 @@ const groups=[
   ['appearance_ru','Внешность'], ['anatomy_ru','Анатомия'], ['pose_ru','Поза'],
   ['clothing_ru','Одежда'], ['style_ru','Стиль / свет'],
   ['uncertainty_ru','Неопределённости'], ['visual_passport','Визуальный паспорт JSON'], ['quality_ru','Проверка качества'], ['framepack_ru','FramePack RU'],
-  ['framepack_en','FramePack EN'], ['timeline_ru','Хронология']
+  ['framepack_en','FramePack EN'], ['timeline_ru','Timeline RU / Хронология']
 ];
 function status(s, danger=false){ $('statusline').textContent=s; $('statusline').style.color=danger?'#f09d99':'#d6bbdf'; }
 // PES_STATUS_V051: UI tracks stage notifications and elapsed time, not model tokens.
@@ -127,6 +127,46 @@ function download(name,body,mime){const blob=new Blob([body],{type:mime});const 
 function base(){return (chosen?.name||'prompt').replace(/\.[^.]*$/,'').replace(/[^a-zA-Zа-яА-Я0-9_-]/g,'_').slice(0,60)+'_prompts';}
 $('saveDraft').onclick=()=>{if($('partialPreview').textContent)download(base()+'_draft.txt',$('partialPreview').textContent,'text/plain;charset=utf-8');};
 $('exportJson').onclick=()=>{if(latest)download(base()+'.json',JSON.stringify({...latest,source_filename:chosen?.name},null,2),'application/json;charset=utf-8');};
+function videoRepairButton(){
+  const ready=!!(latest?.kind==='video' && latest?.source_analysis &&
+    ['framepack_ru','framepack_en','timeline_ru'].some(k=>!latest.sections?.[k]?.trim()));
+  $('repairVideo').disabled=!ready;
+}
+$('importJson').onclick=()=>$('importJsonFile').click();
+$('importJsonFile').onchange=async(e)=>{
+  const f=e.target.files[0];e.target.value='';if(!f)return;
+  try{
+    if(f.size>2000000)throw Error('JSON слишком большой.');
+    const obj=JSON.parse(await f.text());
+    if(!obj||!obj.sections||typeof obj.sections!=='object'||!['video','photo'].includes(obj.kind))throw Error('Это не результат Prompt Extractor Studio.');
+    latest=obj;active='positive_ru';render();
+    $('exportTxt').disabled=false;$('exportJson').disabled=false;videoRepairButton();
+    status('Загружены прежние результаты. Кадры повторно анализировать не нужно.');
+  }catch(err){status('Ошибка загрузки JSON: '+err.message,true);}
+};
+$('repairVideo').onclick=async()=>{
+  if(!latest?.source_analysis||latest.kind!=='video')return;
+  const button=$('repairVideo');button.disabled=true;
+  stageBegin();stageUpdate('Восстановление FramePack и хронологии из готового текстового анализа…');
+  status('Отдельный запрос к Qwen: восстанавливаем недостающие поля без повторного анализа видео…');
+  try{
+    const resp=await fetch('/api/video/repair',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({kind:'video',sections:latest.sections,
+        source_analysis:latest.source_analysis,frame_times:latest.frame_times||[]})
+    });
+    const obj=await resp.json();if(!resp.ok)throw Error(obj.error||'HTTP '+resp.status);
+    for(const k of ['framepack_ru','framepack_en','timeline_ru'])if(obj.sections[k])latest.sections[k]=obj.sections[k];
+    latest.complete=Object.entries(latest.sections).filter(([k,v])=>k!=='quality_ru'&&typeof v==='string'&&v.trim()).length;
+    latest.quality_flags=[...(latest.quality_flags||[]),...(obj.notices||[])];
+    if(obj.missing?.length){
+      status('Не удалось заполнить: '+obj.missing.join(', ')+'. Проверь отчёт качества.',true);
+      stageEnd(true);
+    }else{status('FramePack RU/EN и Timeline RU заполнены. Проверь по исходному видео.');stageEnd(false);}
+    active='framepack_en';render();
+  }catch(err){stageEnd(true);status('Ошибка восстановления: '+err.message,true);}
+  finally{videoRepairButton();}
+};
 $('exportTxt').onclick=()=>{if(latest)download(base()+'.txt',groups.map(([key,label])=>'=== '+label+' ===\n'+(key==='visual_passport'?JSON.stringify(latest.visual_passport||{},null,2):(latest.sections[key]||''))).join('\n\n'),'text/plain;charset=utf-8');};
 async function streamAnalysis(payload){
   const resp=await fetch('/api/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
@@ -146,6 +186,7 @@ async function streamAnalysis(payload){
       if(msg.event==='error')throw Error(msg.message);
       if(msg.event==='done'){
         stageEnd(false);latest=msg.data;active='positive_ru';render();$('exportTxt').disabled=false;$('exportJson').disabled=false;
+        videoRepairButton();
         const cachedNote=latest.cache_hit?' Из кэша без повторной генерации.':'';
         const n=latest.complete; const issues=(latest.quality_flags||[]).filter(s=>!s.startsWith('Формальные проверки')); status('Анализ завершён: '+n+'/'+latest.total+' разделов.'+cachedNote+' '+(issues.length?'Замечания: '+issues.length+'. Открой «Проверка качества».':'Сверь результат с оригиналом.'),n<latest.total||issues.length>0);
         if(n<latest.total-4){active='positive_ru';render(); status('Модель вернула неполный результат: '+n+'/'+latest.total+'. Исходный ответ сохранён в JSON. Проверь лимиты генерации.',true);}

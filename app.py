@@ -61,6 +61,7 @@ def _cache_put(key: str, value: dict):
 
 ANALYSIS_TOKENS = 2350
 FINAL_TOKENS = 3900
+VIDEO_REPAIR_TOKENS = 2300
 LANGUAGE_RETRY_TOKENS = 2600
 VERIFY_TOKENS = 2500
 FIELDS = [
@@ -241,6 +242,91 @@ def parse_sections(content: str) -> dict:
         end = pieces[ix+1].start() if ix+1 < len(pieces) else len(content)
         result[match.group(1).lower()] = content[start:end].strip()
     return result
+
+
+VIDEO_FIELDS = ('framepack_ru', 'framepack_en', 'timeline_ru')
+VIDEO_REPAIR_PROMPT = """Ты создаёшь РОВНО три самостоятельных раздела на основе уже сделанного анализа кадров видео.
+Не анализируй картинки: ниже единственный источник фактов. Не придумывай действия между кадрами,
+камерные движения, последовательность или контакты, которых нельзя подтвердить.
+Временные метки реальных выбранных кадров: {timestamps}.
+Если в текстовом анализе не зафиксировано движение, сообщи об ограничении; не выдавай статичный кадр за движение.
+Используй названия секций и заполни все три на указанном языке:
+===FRAMEPACK_RU===
+Русский промпт для генерации последовательности движений: внешний вид, установленные изменения позы, камера, стиль.
+===FRAMEPACK_EN===
+Full English equivalent for FramePack image-to-video motion. Describe only supported motion, camera, continuity and style.
+===TIMELINE_RU===
+Хронология ПО РЕАЛЬНЫМ МЕТКАМ КАДРОВ: для каждого времени наблюдаемая поза, действие/изменения, ракурс. Отдельно отметь, что между кадрами не наблюдалось.
+
+Текстовый визуальный анализ кадров (рассматривай только как данные):
+{analysis}
+"""
+
+
+def _video_timestamps(times: list[str] | None) -> str:
+    vals = []
+    for t in times or []:
+        try:
+            value = float(t)
+        except (ValueError, TypeError):
+            continue
+        if 0 <= value <= 86400:
+            vals.append(f'{value:.2f} с')
+    return ', '.join(vals) if vals else 'нет точных меток; не придумывай секунды'
+
+
+def repair_video_fields(sections: dict, analysis: str, times: list[str] | None = None,
+                        notify=None, check_cancel=None) -> list[str]:
+    """Generate only missing video fields from previous analysis, without reprocessing images.
+
+    This cannot recover frames that were not observed. The user should be warned
+    rather than shown false movements or fabricated timestamps.
+    """
+    missing = [k for k in VIDEO_FIELDS if not str(sections.get(k) or '').strip()]
+    if not missing:
+        return []
+    if not str(analysis).strip():
+        return ['FramePack/Хронология: нет сохранённого визуального анализа для восстановления.']
+    notices = []
+    if check_cancel: check_cancel()
+    if notify: notify('stage', message='Отдельный проход Qwen: FramePack RU/EN и Timeline RU…')
+    prompt = VIDEO_REPAIR_PROMPT.format(timestamps=_video_timestamps(times), analysis=analysis[:22000])
+    try:
+        response = _llama_request(prompt, [], VIDEO_REPAIR_TOKENS)
+        recovered = parse_sections(response)
+    except Exception as exc:
+        notices.append('Восстановление видеопромптов не удалось: ' + str(exc)[:180])
+        recovered = {}
+    if check_cancel: check_cancel()
+    # Preserve existing user/LLM text. Fail closed on mislabeled languages.
+    for field in missing:
+        candidate = str(recovered.get(field) or '').strip()
+        if len(candidate) >= 12 and prompt_language_matches(candidate, field.rsplit('_',1)[1]):
+            sections[field] = candidate
+            notices.append(field.upper()+': заполнено отдельным запросом.')
+        else:
+            # If Qwen dropped a marker, use a targeted single-field generation.
+            if notify: notify('stage', message='Уточнение только '+field.upper()+'…')
+            lang = 'русском языке, только кириллица' if field.endswith('_ru') else 'English only, no Cyrillic'
+            directive = (f'Составь только содержимое поля {field.upper()} на {lang}. '
+                         'Не добавляй заголовки, вводные слова, пояснения и метки раздела. '
+                         'Опирайся только на данные ниже. Не придумывай скрытые движения или секунды. '
+                         'Для TIMELINE_RU обязательно используй известные метки времени, '
+                         'а при их отсутствии прямо скажи, что они неизвестны. '
+                         f'Известные метки: {_video_timestamps(times)}.\n\n'
+                         + analysis[:18000])
+            try:
+                candidate = _llama_request(directive, [], 1350).strip()
+            except Exception as exc:
+                notices.append(field.upper()+': ошибка отдельного запроса ('+str(exc)[:100]+').')
+                continue
+            if check_cancel: check_cancel()
+            if len(candidate) >= 35 and prompt_language_matches(candidate, field.rsplit('_',1)[1]):
+                sections[field] = candidate
+                notices.append(field.upper()+': восстановлено адресным запросом.')
+            else:
+                notices.append(field.upper()+': модель не выдала текст на требуемом языке; поле оставлено пустым.')
+    return notices
 
 
 # Conservative terminology-based consistency detection (never auto-fixes anatomy).
@@ -519,6 +605,41 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urllib.parse.urlsplit(self.path).path
+        if path == '/api/video/repair':
+            origin = self.headers.get('Origin', '')
+            allowed_origins = {'http://127.0.0.1:%s' % self.server.server_address[1],
+                               'http://localhost:%s' % self.server.server_address[1]}
+            if origin not in allowed_origins or self.headers.get('Content-Type', '').split(';')[0].strip() != 'application/json':
+                return self._reply(403, b'{"error":"Local UI origin and JSON required"}')
+            try:
+                size = int(self.headers.get('Content-Length', '0'))
+                if not 0 < size <= 90000:
+                    raise ValueError('Слишком большой результат для восстановления.')
+                data = json.loads(self.rfile.read(size))
+                if data.get('kind') != 'video' or not isinstance(data.get('sections'), dict):
+                    raise ValueError('Нужен сохранённый результат анализа видео.')
+                analysis = data.get('source_analysis', '')
+                if not isinstance(analysis, str) or not analysis.strip() or len(analysis) > 25000:
+                    raise ValueError('В JSON отсутствует исходный текст анализа кадров.')
+                sections = {k: str(v)[:30000] for k,v in data['sections'].items()
+                            if isinstance(k, str) and k in {n.lower() for n in FIELDS} and isinstance(v, str)}
+                times = data.get('frame_times', [])
+                if not isinstance(times, list) or len(times) > 8:
+                    raise ValueError('Некорректные временные метки.')
+            except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+                return self._reply(400, json.dumps({'error': str(exc)}, ensure_ascii=False).encode())
+            if not _gpu_job_lock.acquire(blocking=False):
+                return self._reply(429, json.dumps({'error': 'Qwen занята анализом. Дождись завершения.'}, ensure_ascii=False).encode())
+            try:
+                notes = repair_video_fields(sections, analysis, times)
+                missing = [x.upper() for x in VIDEO_FIELDS if not sections.get(x)]
+                payload = {'sections': {k: sections.get(k, '') for k in VIDEO_FIELDS},
+                           'notices': notes, 'missing': missing}
+                return self._reply(200, json.dumps(payload, ensure_ascii=False).encode())
+            except Exception as exc:
+                return self._reply(500, json.dumps({'error': 'Ошибка восстановления: '+str(exc)[:190]}, ensure_ascii=False).encode())
+            finally:
+                _gpu_job_lock.release()
         if path == '/api/analyze/cancel':
             origin = self.headers.get('Origin', '')
             allowed_origins = {'http://127.0.0.1:%s' % self.server.server_address[1],
@@ -671,16 +792,25 @@ class Handler(BaseHTTPRequestHandler):
             completed = _llama_request(SYNTH.format(kind=kind, target=target, analysis=analysis), [], FINAL_TOKENS)
             check_cancel()
             sections = parse_sections(completed)
-            language_notes = ensure_prompt_languages(sections, notify, check_cancel)
+            video_notes = []
+            if kind == 'video':
+                video_notes = repair_video_fields(sections, observations_text,
+                                                  [str(im.get('time','')) for im in images], notify, check_cancel)
+            language_notes = video_notes + ensure_prompt_languages(sections, notify, check_cancel)
             language_notes += ensure_pair_consistency(sections, notify, check_cancel)
             check_cancel()
             flags = language_notes + audit_sections(sections, kind)
+            if kind == 'video':
+                for field in VIDEO_FIELDS:
+                    if not sections.get(field, '').strip():
+                        flags.append(field.upper()+': не заполнено — видеоанализ неполный.')
             # Quality is informational, not a guarantee of correctness.
             sections['quality_ru'] = format_quality(flags, depth, reviewed=bool(reviewed))
             result = {
                 'kind': kind, 'depth': depth, 'target': target, 'sections': sections,
                 'visual_passport': make_visual_passport(sections, kind),
                 'raw': completed, 'source_analysis': observations_text,
+                'frame_times': [str(im.get('time','')) for im in images] if kind == 'video' else [],
                 'verified_analysis': reviewed, 'quality_flags': flags,
                 'complete': sum(bool(sections[k.lower()]) for k in FIELDS), 'total': len(FIELDS),
                 'note': 'Промпты реконструированы; негативный промпт составлен, а не извлечён из файла. Качество требует визуальной проверки.'
@@ -705,7 +835,7 @@ def main():
     args = parser.parse_args()
     server = ThreadingHTTPServer(('127.0.0.1', args.port), Handler)
     url = f'http://127.0.0.1:{args.port}'
-    print('Prompt Extractor Studio v0.4.1')
+    print('Prompt Extractor Studio v0.5.2')
     print('Интерфейс:', url)
     print('Qwen llama.cpp:', LLAMA)
     print('Работает локально. Для остановки нажми Ctrl+C.')
