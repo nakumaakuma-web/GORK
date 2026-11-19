@@ -34,7 +34,7 @@ class MockLlama(BaseHTTPRequestHandler):
         contents = request['messages'][1]['content']
         prompt = contents[0]['text']
         if '===APPEARANCE_RU===' in prompt:
-            answer = '\n'.join(f'==={k}===\nValue {k}' for k in app.FIELDS)
+            answer = '\n'.join(f'==={k}===\n' + (('English prompt with accurate clothing and body position.' if k.endswith('_EN') else 'Русский промпт с точной одеждой и положением тела.') if k.startswith(('POSITIVE','NEGATIVE')) else 'Русское описание деталей лица и позы.') for k in app.FIELDS)
         else:
             answer = 'Описание: зелёные глаза, пряди, поза. Неясная сторона татуировки.'
         self.wfile.write(json.dumps({'choices':[{'message':{'content': answer}}]}).encode())
@@ -94,7 +94,7 @@ class Tests(unittest.TestCase):
             text=r.read().decode()
         events=[json.loads(x) for x in text.splitlines() if x.strip()]
         self.assertEqual(events[-1]['event'],'done')
-        self.assertEqual(events[-1]['data']['sections']['positive_ru'], 'Value POSITIVE_RU')
+        self.assertEqual(events[-1]['data']['sections']['positive_ru'], 'Русский промпт с точной одеждой и положением тела.')
         self.assertEqual(events[-1]['data']['complete'], len(app.FIELDS))
         self.assertEqual(len(self.mock.requests),2)
         self.assertEqual(self.mock.requests[0]['model'],'mock-qwen35')
@@ -113,6 +113,38 @@ class Tests(unittest.TestCase):
         self.assertEqual(self.mock.requests[3]['messages'][1]['content'][1]['type'],'image_url')
         self.assertTrue(events[-1]['data']['verified_analysis'])
         self.assertIn('quality_ru',events[-1]['data']['sections'])
+
+    def test_language_guard_rejects_english_in_ru(self):
+        self.assertFalse(app.prompt_language_matches('A woman wearing a beige dress with boots.', 'ru'))
+        self.assertTrue(app.prompt_language_matches('Женщина в бежевом платье и сапогах.', 'ru'))
+        self.assertFalse(app.prompt_language_matches('Платье бежевого цвета.', 'en'))
+        self.assertTrue(app.prompt_language_matches('Beige dress, studio lighting.', 'en'))
+
+    def test_repair_english_positive_ru(self):
+        parts = {'positive_ru': 'A woman in a beige dress with gold jewelry.',
+                 'positive_en': 'A woman in a beige dress with gold jewelry.',
+                 'negative_ru': 'Искаженные пальцы и неправильная анатомия.',
+                 'negative_en': 'Distorted fingers and incorrect anatomy.'}
+        with patch.object(app, '_llama_request', return_value='Женщина в бежевом платье с золотыми украшениями.') as mocked:
+            messages = app.ensure_prompt_languages(parts)
+        self.assertEqual(mocked.call_count, 1)
+        self.assertIn('бежевом платье', parts['positive_ru'])
+        self.assertEqual(parts['positive_en'], 'A woman in a beige dress with gold jewelry.')
+        self.assertTrue(any('POSITIVE_RU' in m for m in messages))
+
+    def test_bad_retry_fails_closed(self):
+        parts={'positive_ru': 'Still English even in the Russian field.'}
+        with patch.object(app, '_llama_request', return_value='Still wrong English output.'):
+            msgs=app.ensure_prompt_languages(parts)
+        self.assertEqual(parts['positive_ru'], '')
+        self.assertIn('неверный язык', msgs[0])
+
+    def test_translation_error_does_not_abort_entire_analysis(self):
+        parts={'positive_ru':'English material only, clearly no Russian.'}
+        with patch.object(app, '_llama_request', side_effect=RuntimeError('test')):
+            msgs=app.ensure_prompt_languages(parts)
+        self.assertEqual(parts['positive_ru'], '')
+        self.assertIn('не удалось', msgs[0])
 
     def test_detect_opposite_sides_ru_en(self):
         fields={'positive_ru':'Татуировка на левой стороне груди, правая рука поднята',

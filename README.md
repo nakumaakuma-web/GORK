@@ -10,3 +10,6 @@ Local reverse prompting for still images and sampled video frames with an existi
 **Current version:** v0.4.0. See [README_RU.md](README_RU.md) for setup, updater linking and limitations.
 
 **v0.4:** deep photo mode rechecks original image; separate anatomy, pose and diagnostic consistency flags.
+
+### 0.4.1
+Fix language labels for Positive/Negative RU/EN with automatic validation, an isolated Qwen translation retry, and a fail-closed warning for repeated mismatches.

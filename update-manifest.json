@@ -1,12 +1,12 @@
 {
   "application": "prompt-extractor-studio",
-  "version": "0.4.0",
-  "notes": "v0.4: отдельный анатомический блок, повторная визуальная сверка фото, диагностика ошибок RU/EN. Сохраняет Qwen и результаты.",
+  "version": "0.4.1",
+  "notes": "v0.4.1: Positive/Negative RU/EN автоматически проверяются на правильный язык; неверные поля переводятся отдельным запросом. Сохраняет Qwen и результаты.",
   "files": [
     {
       "path": "app.py",
-      "size": 31828,
-      "sha256": "73229ca46eb838a57dcffbe8c8e7b349bb239cff1ae45c94917b7dd8b44a032e"
+      "size": 35829,
+      "sha256": "fe19d16aeb9437145b1386aa2509545f51160b15d33b7e0eac7c713951191f87"
     },
     {
       "path": "updater.py",
@@ -15,8 +15,8 @@
     },
     {
       "path": "ui/index.html",
-      "size": 8577,
-      "sha256": "8d15505b96f5fb542bdb4372476be53180613d990682c193d73cfb6de9057d69"
+      "size": 8583,
+      "sha256": "5ce63afb59789ea67584cf1a84ea7d838dfb072bfc7895f7b5ea86700041e1ad"
     },
     {
       "path": "ui/ui.js",
@@ -35,13 +35,13 @@
     },
     {
       "path": "README_RU.md",
-      "size": 4967,
-      "sha256": "3d1215a84cf81bc9c6e1095ac273f268edd0d3a2d3ed6d1fcae241a4aefe5125"
+      "size": 5752,
+      "sha256": "cac69c458f8980a9506a42d8095be0ff7ed8be34d9f3a8f29f1a92a37afb14a5"
     },
     {
       "path": "tests/test_app.py",
-      "size": 7151,
-      "sha256": "2caec42e89a4215bad25442ca504548dcd63d1486d71fe6e0492aa6704c585e2"
+      "size": 9672,
+      "sha256": "a4d27d836bc27b0072525f49450311cf69c77dbb42bb0067d787701b6737ab76"
     },
     {
       "path": "tests/test_updater.py",
