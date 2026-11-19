@@ -18,6 +18,31 @@ const videoGroups=[
   ['quality_ru','Проверка качества']
 ];
 let groups=photoGroups, sourceMode='photo';
+const PES_HELP = {
+  "positive_ru": "Позитивный промпт на русском. Содержит детали изображения, которые нужно воспроизвести при генерации.",
+  "positive_en": "Английская версия позитивного промпта для генератора изображений.",
+  "negative_ru": "Русское описание артефактов и нежелательных изменений, которых нужно избегать.",
+  "negative_en": "Английский негативный промпт для генератора изображения.",
+  "appearance_ru": "Видимые устойчивые признаки внешности: лицо, причёска, цвет волос, кожа и уникальные детали.",
+  "anatomy_ru": "Видимые пропорции тела. Невидимые детали не должны выдаваться за установленные факты.",
+  "pose_ru": "Положение головы, корпуса, рук и ног в исходном изображении. Не является анализом движения.",
+  "clothing_ru": "Одежда, обувь, аксессуары и их видимые материалы.",
+  "style_ru": "Художественный стиль, освещение, ракурс и композиция исходного изображения.",
+  "visual_passport": "Структурированные характеристики изображения в JSON для последующего использования.",
+  "participants_ru": "Кто действительно присутствует в видеоролике: количество участников, узнаваемые признаки и изменения их положения. Возраст по внешности не подтверждается.",
+  "setting_ru": "Что видно в окружении: помещение или локация, мебель, предметы, освещение и фон. Не добавляет невидимые элементы.",
+  "process_ru": "Фактически наблюдаемая последовательность событий: что происходит сначала, как развивается процесс и чем заканчивается.",
+  "interactions_ru": "Видимые взаимодействия участников между собой и с предметами; отмечает моменты изменения контакта.",
+  "rhythm_ru": "Повторяемость действий, наблюдаемый темп и изменения направления. Если данных мало, точный ритм не утверждается.",
+  "camera_ru": "Движение камеры, ракурс, приближение, панорама, смена плана и стабильность съёмки.",
+  "evidence_ru": "Временные точки, на которых основаны наблюдения. Позволяет проверить утверждения по ролику.",
+  "adult_context_ru": "В режиме 18+ уточняет наблюдаемый контекст взрослой сцены, взаимодействия и последовательность действий без выдумывания невидимых подробностей.",
+  "uncertainty_ru": "Что модель не смогла достоверно установить по доступному материалу.",
+  "timeline_ru": "Последовательность подтверждённых действий с временными метками. Промежутки без наблюдений остаются неопределёнными.",
+  "framepack_ru": "Русская версия инструкции движения для FramePack: действие во времени, камера и ограничения сохранения внешности.",
+  "framepack_en": "Английский Motion Prompt для FramePack. Описывает развитие действия, а не только статичный кадр.",
+  "quality_ru": "Замечания к результату: неполные поля, расхождения и сомнительные наблюдения."
+};
 function getVideoMode(){return $('videoContent').value;}
 function refreshSourceMode(){
   const isVideo=sourceMode==='video';
@@ -39,7 +64,7 @@ function selectSourceMode(newMode){
     if(objectURL){URL.revokeObjectURL(objectURL);objectURL=null;}
     $('photoPreview').removeAttribute('src');$('videoPreview').removeAttribute('src');
     $('drop').classList.remove('loaded');$('filename').textContent='Файл не выбран';
-    $('run').disabled=true;$('frameStrip').style.display='none';$('frameStrip').replaceChildren();
+    $('run').disabled=true;$('clearSource').hidden=true;$('file').value='';$('frameStrip').style.display='none';$('frameStrip').replaceChildren();
   }
   sourceMode=newMode;refreshSourceMode();
 }
@@ -114,7 +139,7 @@ function stageEnd(failed=false, cancelled=false){
 function render(){
   $('tabs').innerHTML='';$('results').innerHTML='';
   groups.forEach(([key,label])=>{
-    const tab=document.createElement('button');tab.className='tab'+(key===active?' active':'');tab.textContent=label;tab.onclick=()=>{active=key;render();};$('tabs').appendChild(tab);
+    const tab=document.createElement('button');tab.className='tab'+(key===active?' active':'');tab.textContent=label;tab.dataset.help=PES_HELP[key]||'Описание раздела результата анализа.';tab.onclick=()=>{active=key;render();};$('tabs').appendChild(tab);
     const panel=document.createElement('div');panel.className='panel'+(key===active?' active':'');
     const head=document.createElement('div');head.className='editorhead';
     const title=document.createElement('strong');title.textContent=label;
@@ -136,9 +161,9 @@ function getFile(file){
   $('drop').classList.add('loaded');$('photoPreview').style.display=isImage?'block':'none';$('videoPreview').style.display=isVideo?'block':'none';
   if(isVideo){$('videoPreview').src=objectURL;$('photoPreview').removeAttribute('src');}else{$('photoPreview').src=objectURL;$('videoPreview').removeAttribute('src');}
   $('filename').textContent=file.name+' · '+(file.size/1024/1024).toFixed(2)+' МБ · '+(isVideo?'Видео':'Фото');
-  $('run').disabled=false;status('Исходник выбран. Готов к анализу.');
+  $('clearSource').hidden=false;$('run').disabled=false;status('Исходник выбран. Готов к анализу.');
 }
-$('drop').onclick=(e)=>{if(e.target.closest('video'))return;$('file').click();};$('drop').onkeydown=(e)=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();$('file').click();}};
+$('drop').onclick=(e)=>{if(e.target.closest('video')||e.target.closest('#clearSource'))return;$('file').click();};$('drop').onkeydown=(e)=>{if(e.target!==$('drop'))return;if(e.key==='Enter'||e.key===' '){e.preventDefault();$('file').click();}};
 $('drop').addEventListener('dragover',e=>{e.preventDefault();$('drop').classList.add('drag');});
 $('drop').addEventListener('dragleave',()=>{$('drop').classList.remove('drag');});
 $('drop').addEventListener('drop',e=>{e.preventDefault();$('drop').classList.remove('drag');getFile(e.dataTransfer.files[0]);});
@@ -564,3 +589,95 @@ $('motionRender').onclick=async()=>{
   }catch(err){motionRenderMessage('Ошибка генерации: '+err.message,'error');}
   finally{motionRendering=false;motionRefreshRenderButton();}
 };
+
+
+// PES_UI_HELP_V081 — tooltip near cursor/focus, plus removable uploaded source.
+$('clearSource').addEventListener('click',(event)=>{
+  event.preventDefault();event.stopPropagation();
+  if(currentJob){status('Дождись завершения анализа или нажми «Остановить», затем убери файл.',true);return;}
+  if(!chosen)return;
+  const video=$('videoPreview');video.pause();video.removeAttribute('src');video.load();
+  $('photoPreview').removeAttribute('src');
+  if(objectURL)URL.revokeObjectURL(objectURL);
+  objectURL=null;chosen=null;type=null;$('file').value='';
+  $('drop').classList.remove('loaded');$('clearSource').hidden=true;
+  $('photoPreview').style.display='none';video.style.display='none';
+  $('filename').textContent='Файл не выбран';$('run').disabled=true;
+  $('frameStrip').replaceChildren();$('frameStrip').style.display='none';
+  status('Файл убран из окна. Сохранённые результаты и исходник на диске не затронуты.');
+});
+const PES_FIELD_HELP = {
+  modePhoto:'В этом режиме программа анализирует одно изображение и формирует отдельные позитивные и негативные промпты.',
+  modeVideo:'В этом режиме программа анализирует изменения во времени, участников, действия и готовит Motion Prompt для FramePack.',
+  videoContent:'Обычное видео или 18+. Выбор 18+ усиливает внимание к последовательности взаимодействий взрослых участников.',
+  videoAdultConfirm:'Подтверждение совершеннолетия всех участников обязательно для режима 18+. По внешности возраст достоверно не определяется.',
+  videoDetail:'Количество временных наблюдений. Подробный режим использует больше точек, но работает дольше.',
+  target:'Выбор генератора, под который будет подготовлен промпт изображения.',
+  sourceModes:'Переключатель между независимыми режимами изображения и видео.',
+  depth:'Глубина анализа Qwen: быстрый режим экономит время, максимальный выполняет дополнительные проверки.',
+  run:'Запускает анализ выбранного файла локальной Qwen. Во время обработки результаты появляются по этапам.',
+  stop:'Запрашивает остановку анализа после текущего ответа Qwen. Уже полученный черновик можно сохранить.',
+  importJson:'Загрузить сохранённый JSON с результатом анализа без повторного просмотра видео.',
+  exportJson:'Сохранить все разделы, временные наблюдения и служебные данные результата в JSON.',
+  exportTxt:'Сохранить текстовые промпты и описания в TXT.',
+  repairVideo:'Повторно запросить только недостающие Motion Prompt и хронологию, используя готовый анализ.',
+  motionDirector:'Режиссёр анимации: задаёт движения по времени и превращает указания в Motion Prompt для FramePack.',
+  motionStyle:'Аниме, 2.5D или фотореализм. Выбранный стиль определяет требования к неизменности внешности.',
+  motionDuration:'Продолжительность планируемой анимации. Этапы движения задаются внутри этого интервала.',
+  motionCamera:'Как движется виртуальная камера: неподвижно, приближение, панорама или сопровождение.',
+  motionPace:'Скорость и характер движения персонажа.',
+  motionIdentity:'Устойчивые признаки персонажа, которые необходимо сохранять во всех кадрах.',
+  motionScene:'Где находится персонаж и с какого положения начинается движение.',
+  motionDirection:'Дополнительные указания режиссёра: порядок действий, плавность, ограничения.',
+  motionAddBeat:'Добавить очередной временной этап действия, не превышая длину сцены.',
+  motionAdult:'Дополнительные настройки сцены только с совершеннолетними персонажами.',
+  motionAdultConfirm:'Подтверждение, что все участники сцены совершеннолетние.',
+  motionFromAnalysis:'Перенести внешность и исходную сцену из уже готового анализа.',
+  checkUpdate:'Проверить доступную версию в GitHub. Проверка не устанавливает обновление.',
+  installUpdate:'Установить доступное обновление с резервной копией. Не нажимай во время анализа.'
+};
+for(const [id,help] of Object.entries(PES_FIELD_HELP)){
+  const node=$(id);if(!node)continue;
+  node.dataset.help=help;
+  const label=node.closest('.dirLabel,.field,.dirCheck');
+  if(label&&!label.dataset.help)label.dataset.help=help;
+}
+const pesTooltip=$('pesTooltip');let pesOwner=null,pesTipDelay=null,pesVisible=false;
+function pesHideHelp(){clearTimeout(pesTipDelay);pesTipDelay=null;pesOwner=null;pesVisible=false;pesTooltip.hidden=true;}
+function pesMoveHelp(x,y){
+  if(!pesVisible)return;
+  const box=pesTooltip.getBoundingClientRect();
+  let left=x+17,top=y+17;
+  if(left+box.width>innerWidth-8)left=x-box.width-17;
+  if(top+box.height>innerHeight-8)top=y-box.height-17;
+  pesTooltip.style.left=Math.max(8,left)+'px';
+  pesTooltip.style.top=Math.max(8,top)+'px';
+}
+function pesShowHelp(el,x,y,delay=300){
+  if(!el||!el.dataset.help)return;
+  if(el===pesOwner)return;
+  pesHideHelp();pesOwner=el;
+  pesTipDelay=setTimeout(()=>{
+    if(pesOwner!==el||!document.contains(el))return;
+    pesTooltip.textContent=el.dataset.help;
+    pesTooltip.hidden=false;pesVisible=true;pesMoveHelp(x,y);
+  },delay);
+}
+if(matchMedia('(hover: hover)').matches){
+  document.addEventListener('pointerover',e=>{
+    const el=e.target.closest?.('[data-help]');
+    if(el)pesShowHelp(el,e.clientX,e.clientY);
+  });
+  document.addEventListener('pointermove',e=>{if(pesOwner)pesMoveHelp(e.clientX,e.clientY)});
+  document.addEventListener('pointerout',e=>{
+    if(pesOwner&&!pesOwner.contains(e.relatedTarget))pesHideHelp();
+  });
+}
+document.addEventListener('focusin',e=>{
+  const el=e.target.closest?.('[data-help]');
+  if(!el)return;
+  const r=el.getBoundingClientRect();pesShowHelp(el,r.left+r.width/2,r.bottom,150);
+});
+document.addEventListener('focusout',pesHideHelp);
+document.addEventListener('keydown',e=>{if(e.key==='Escape')pesHideHelp();});
+window.addEventListener('scroll',pesHideHelp,true);
