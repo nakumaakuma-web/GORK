@@ -1,27 +1,27 @@
 {
   "application": "prompt-extractor-studio",
-  "version": "0.5.2",
-  "notes": "v0.5.2: восстановление FramePack RU/EN и Timeline RU из готового анализа кадров; импорт JSON; не повторяет анализ видео. Включает улучшения v0.5.1.",
+  "version": "0.6.0",
+  "notes": "v0.6: адаптивный выбор 8 ключевых кадров из 18, миниатюры с таймкодами; отдельная сборка FramePack RU/EN и Timeline RU, контроль меток. Qwen и данные сохраняются.",
   "files": [
     {
       "path": "app.py",
-      "size": 56034,
-      "sha256": "a571e660677f71887072ddcc09563cc39d2ca06305b736c512086b1414e63d05"
+      "size": 62753,
+      "sha256": "df69c631b0a5c6fac9e3c708c27449b50d9718f3e8f540aa8b4748ffc60b7177"
     },
     {
       "path": "updater.py",
       "size": 8713,
-      "sha256": "c199b01919e8569e3d90f82693d275ab6e9320f98ceddf6816b4875ef48b274f"
+      "sha256": "4980f9fc821e9180167c3c6a495878a624f3ed89f87bcdee4d6e6a2f9bc6ea2c"
     },
     {
       "path": "ui/index.html",
-      "size": 11623,
-      "sha256": "1131ec07772e9d9964cf4d95adf2d0859a169a74747c75b51b0cb7f3f596bcab"
+      "size": 12621,
+      "sha256": "de81ba3d3768f58b473778af66adc2fd5031fe0a9b2bbf93510ae61f0f7d6d9e"
     },
     {
       "path": "ui/ui.js",
-      "size": 21633,
-      "sha256": "514c43974a6402f080e6e6086f1faab22b03d06a353385ec1e644657cdcbb88f"
+      "size": 25822,
+      "sha256": "c457ad99f13db5ecf7eab1964d519e683ba343f36850268eeb67e46823ce7c27"
     },
     {
       "path": "start-all.cmd",
@@ -35,18 +35,18 @@
     },
     {
       "path": "README_RU.md",
-      "size": 10616,
-      "sha256": "e868fd32516574fe8c8f9ca7beb83babc021ebb37da9fce4e17cd8aba200c9ce"
+      "size": 12908,
+      "sha256": "a947d52cbd7fe23e5d1792570f5667c18c86661c8f60be13150cd6bccced248b"
     },
     {
       "path": "tests/test_app.py",
-      "size": 23793,
-      "sha256": "6f7f59c8767a11cf763e001771565098914a3f166f363467e00c4a75aec186cb"
+      "size": 28723,
+      "sha256": "2865a133b49f7e84cd737b7b1b949a59c3ff5b71f2f78e8489c493a57ddb292d"
     },
     {
       "path": "tests/test_updater.py",
       "size": 4703,
-      "sha256": "97fd12c368d3b0524d19ef86c708090e27fe5f59a1e118cd024cc637d4098d70"
+      "sha256": "68b21db1171818c0f9105f2089cbab9346b11a00487fb39983a07d5593ed4692"
     }
   ]
 }

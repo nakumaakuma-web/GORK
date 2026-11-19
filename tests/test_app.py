@@ -3,6 +3,7 @@ import uuid
 import time
 import json
 import os
+import re
 import sys
 import threading
 import unittest
@@ -37,6 +38,13 @@ class MockLlama(BaseHTTPRequestHandler):
         prompt = contents[0]['text']
         if '===APPEARANCE_RU===' in prompt:
             answer = '\n'.join(f'==={k}===\n' + (('English prompt with accurate clothing and body position.' if k.endswith('_EN') else 'Русский промпт с точной одеждой и положением тела.') if k.startswith(('POSITIVE','NEGATIVE')) else 'Русское описание деталей лица и позы.') for k in app.FIELDS)
+        elif '===FRAMEPACK_RU===' in prompt:
+            matches=re.search(r'Временные метки РЕАЛЬНЫХ выбранных кадров в порядке просмотра:\s*([^\n]+)',prompt)
+            stamps=re.findall(r'([0-9]+(?:[.,][0-9]+)?\s*с)\b',matches.group(1)) if matches else []
+            time_lines='\n'.join(t+' — видимая поза, без доказанного движения камеры' for t in stamps)
+            answer=('===FRAMEPACK_RU===\nПерсонаж сохраняет видимые особенности, меняет положение на выбранных кадрах.\n'
+                    '===FRAMEPACK_EN===\nThe character keeps their appearance while observed poses differ between sampled frames.\n'
+                    '===TIMELINE_RU===\n'+time_lines+'\nМежду кадрами действие неизвестно.')
         else:
             answer = 'Описание: зелёные глаза, пряди, поза. Неясная сторона татуировки.'
         self.wfile.write(json.dumps({'choices':[{'message':{'content': answer}}]}).encode())
@@ -167,7 +175,7 @@ class Tests(unittest.TestCase):
         with urllib.request.urlopen(self.url + '/api/version') as response:
             version = json.load(response)['version']
         self.assertEqual(version, app.updater.VERSION)
-        self.assertEqual(version, '0.5.2')
+        self.assertEqual(version, '0.6.0')
 
     def test_home_health(self):
         with urllib.request.urlopen(self.url) as r:
@@ -376,6 +384,60 @@ class Tests(unittest.TestCase):
 
     def test_quality_report_does_not_claim_certainty(self):
         self.assertIn('не гарантия',app.format_quality(['Тест'], 'deep', True))
+
+    def test_v06_motion_prompts_independent_of_long_synthesis(self):
+        self.assertIn('===APPEARANCE_RU===', app.SYNTH_VIDEO)
+        self.assertNotIn('===FRAMEPACK_RU===', app.SYNTH_VIDEO)
+        self.assertNotIn('===TIMELINE_RU===', app.SYNTH_VIDEO)
+        self.assertIn('ВОЗМОЖНЫЙ МОНТАЖ', app.VIDEO_FOCUS)
+        self.assertIn('по текстовым наблюдениям', app.VIDEO_REPAIR_PROMPT)
+
+    def test_v06_timeline_coverage_exact_sample_times(self):
+        self.assertEqual(app.missing_timeline_times('0.50 с: поза. 1,25 сек: другой ракурс.', ['0.5','1.25']), [])
+        self.assertEqual(app.missing_timeline_times('0.50 с: поза.', ['0.50','1.25']), ['1.25 с'])
+        self.assertEqual(app.missing_timeline_times('Временные метки: 0.50 с, 1.25 с', ['0.5','1.25']), ['0.50 с','1.25 с'])
+        self.assertEqual(app.missing_timeline_times('нет данных', []), [])
+        self.assertEqual(app.missing_timeline_times('нет данных', ['неизвестно']), [])
+
+    def test_v06_video_timestamp_order_is_required(self):
+        image='data:image/jpeg;base64,'+base64.b64encode(b'time').decode()
+        for times in [['2.0','1.0'],['1.0','1.0'],['not-known','2.0']]:
+            payload={'kind':'video','depth':'fast', 'images':[{'time':t,'data':image} for t in times]}
+            req=urllib.request.Request(self.url+'/api/analyze',data=json.dumps(payload).encode(),
+                                       headers={'Content-Type':'application/json'})
+            with self.assertRaises(urllib.error.HTTPError) as cm:urllib.request.urlopen(req,timeout=3)
+            self.assertEqual(cm.exception.code,400)
+
+    def test_v06_adaptive_video_keeps_provenance_and_dedicated_pass(self):
+        image='data:image/jpeg;base64,'+base64.b64encode(b'adaptive-video').decode()
+        frames=[{'time':f'{n/2:.2f}','data':image} for n in range(8)]
+        payload={'kind':'video','depth':'fast','target':'FramePack F1','sampling_mode':'adaptive', 'images':frames}
+        self.mock.requests.clear()
+        req=urllib.request.Request(self.url+'/api/analyze',data=json.dumps(payload).encode(),
+                                   headers={'Content-Type':'application/json'})
+        with urllib.request.urlopen(req,timeout=10) as res:
+            events=[json.loads(line) for line in res.read().decode().splitlines() if line.strip()]
+        self.assertEqual(events[-1]['event'],'done',events[-1])
+        report=events[-1]['data']
+        self.assertEqual(report['video_sampling'],'adaptive')
+        self.assertEqual(report['frame_times'],[f'{n/2:.2f}' for n in range(8)])
+        self.assertIn('промежуточные движения',report['temporal_limitations'])
+        self.assertEqual(report['complete'],len(app.FIELDS),report['quality_flags'])
+        self.assertEqual(len(self.mock.requests),4)
+        self.assertIn('===FRAMEPACK_RU===',self.mock.requests[-1]['messages'][1]['content'][0]['text'])
+        self.assertNotIn('===APPEARANCE_RU===',self.mock.requests[-1]['messages'][1]['content'][0]['text'])
+        self.assertEqual(app.missing_timeline_times(report['sections']['timeline_ru'], report['frame_times']),[])
+
+    def test_v06_timeline_warns_incomplete_without_fabrication(self):
+        original={k:'' for k in app.VIDEO_FIELDS}
+        result=('===FRAMEPACK_RU===\nПерсонаж стоит в кадре, камера неподвижна.\n'
+                '===FRAMEPACK_EN===\nThe subject stands in a stationary shot.\n'
+                '===TIMELINE_RU===\n0.50 с — персонаж стоит у стены.')
+        with patch.object(app,'_llama_request',return_value=result):
+            warnings=app.repair_video_fields(original,'На первом кадре персонаж у стены. ',['0.5','1.5'])
+        self.assertIn('1.50 с', '\n'.join(warnings))
+        self.assertIn('0.50 с',original['timeline_ru'])
+        self.assertNotIn('1.50 с',original['timeline_ru'])
 
     def test_video_pipeline(self):
         image='data:image/jpeg;base64,'+base64.b64encode(b'test-image').decode()

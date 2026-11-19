@@ -25,9 +25,13 @@ function stageTimerUpdate(){
 function stageDescribe(message){
   const m=message.match(/Анализ кадров\s+(\d+)\s*[–-]\s*(\d+)\s+из\s+(\d+)/i);
   if(m)return 'Qwen анализирует выбранные кадры '+m[1]+'–'+m[2]+' из '+m[3]+'. Ответ появится после завершения прохода.';
+  const search=message.match(/Поиск ключевых изменений:\s*(\d+)\/(\d+)/i);
+  if(search)return 'Браузер сравнивает миниатюры '+search[1]+' из '+search[2]+': ищет заметные изменения цвета и композиции. Это не анализ движения моделью.';
+  if(/Выбрано \d+ ключевых кадров/i.test(message))return 'Ключевые моменты выбраны по визуальным различиям; начинается подготовка кадров для Qwen.';
   const extract=message.match(/Извлечение кадров:\s*(\d+)\/(\d+)/i);
   if(extract)return 'Браузер извлекает кадр '+extract[1]+' из '+extract[2]+' из видео. Генерация промптов ещё не началась.';
   if(/визуальн.*сверк|проверка.*оригинал/i.test(message))return 'Qwen повторно сравнивает описание с изображением и уточняет детали.';
+  if(/FramePack|Timeline|Хронолог/i.test(message))return 'Qwen отдельно собирает промпты движения и хронологию по сохранённым наблюдениям выбранных кадров.';
   if(/сборка.*промпт|формирование.*промпт/i.test(message))return 'Qwen собирает Positive / Negative на русском и английском.';
   if(/исправление языка|сверка перевод/i.test(message))return 'Проверяется язык и согласованность промптов RU / EN.';
   if(/подробный анализ|внешность|анатомия|поз[аыуе]|стиль|визуальный паспорт/i.test(message))return 'Qwen уточняет детали внешности, геометрии позы и сцены.';
@@ -89,6 +93,7 @@ function getFile(file){
   const isImage=file.type.startsWith('image/') || /\.(png|jpe?g|webp)$/i.test(file.name);
   if(!isImage&&!isVideo){status('Нужен фото- или видеофайл.',true);return;}
   if(objectURL)URL.revokeObjectURL(objectURL); chosen=file;type=isVideo?'video':'photo';objectURL=URL.createObjectURL(file);
+  $('frameStrip').style.display='none';$('frameStrip').replaceChildren();
   $('drop').classList.add('loaded');$('photoPreview').style.display=isImage?'block':'none';$('videoPreview').style.display=isVideo?'block':'none';
   if(isVideo){$('videoPreview').src=objectURL;$('photoPreview').removeAttribute('src');}else{$('photoPreview').src=objectURL;$('videoPreview').removeAttribute('src');}
   $('filename').textContent=file.name+' · '+(file.size/1024/1024).toFixed(2)+' МБ · '+(isVideo?'Видео':'Фото');
@@ -103,23 +108,90 @@ $('depth').querySelectorAll('button').forEach(btn=>btn.onclick=()=>{depth=btn.da
 function pause(ms){return new Promise(r=>setTimeout(r,ms));}
 function canvasData(source,width,height,maxDim){const scale=Math.min(1,maxDim/Math.max(width,height));const can=document.createElement('canvas');can.width=Math.round(width*scale);can.height=Math.round(height*scale);if(!can.width||!can.height)throw Error('Не удалось определить размеры изображения.');can.getContext('2d').drawImage(source,0,0,can.width,can.height);return can.toDataURL('image/jpeg',0.91);}
 async function framesImage(){const im=new Image();im.src=objectURL;await im.decode();return [{time:'',data:canvasData(im,im.naturalWidth,im.naturalHeight,depth==='deep'?1800:1350)}];}
+// Heuristic based on coarse color differences; a cut or lighting change can look like motion.
+function frameFeature(source){
+  const c=document.createElement('canvas');c.width=12;c.height=12;
+  const ctx=c.getContext('2d',{willReadFrequently:true});ctx.drawImage(source,0,0,12,12);
+  const rgba=ctx.getImageData(0,0,12,12).data, rgb=[];
+  for(let k=0;k<rgba.length;k+=4)rgb.push(rgba[k],rgba[k+1],rgba[k+2]);
+  return rgb;
+}
+function visualDifference(a,b){
+  if(!a||!b||a.length!==b.length)return 0;
+  let score=0;for(let i=0;i<a.length;i++)score+=Math.abs(a[i]-b[i]);
+  return score/a.length;
+}
+function chooseMotionCandidates(candidates, wanted){
+  const n=candidates.length;wanted=Math.max(2,Math.min(wanted,n));
+  if(n<=wanted)return candidates.slice();
+  const chosen=[candidates[0]];
+  const slots=wanted-2;
+  for(let slot=0;slot<slots;slot++){
+    const lo=1+Math.floor(slot*(n-2)/slots);
+    const hi=1+Math.floor((slot+1)*(n-2)/slots);
+    const middle=(lo+hi-1)/2;
+    let best=lo,bestScore=-Infinity;
+    for(let i=lo;i<hi;i++){
+      const before=visualDifference(candidates[i].feature,candidates[i-1].feature);
+      const after=visualDifference(candidates[i].feature,candidates[i+1].feature);
+      // A small centrality tie-breaker ensures reproducible coverage in static scenes.
+      const score=Math.max(before,after)+(1-Math.abs(i-middle)/Math.max(1,hi-lo))*0.01;
+      if(score>bestScore){bestScore=score;best=i;}
+    }
+    chosen.push(candidates[best]);
+  }
+  chosen.push(candidates[n-1]);
+  return chosen;
+}
+function renderFrameSamples(frames){
+  const grid=$('frameStrip');grid.replaceChildren();
+  if(type!=='video')return;
+  frames.forEach((frame,index)=>{
+    const btn=document.createElement('button');btn.type='button';btn.className='frameSample';
+    btn.title='Показать этот момент в видеоплеере';
+    const img=document.createElement('img');img.src=frame.data;img.alt='Ключевой кадр '+(index+1);
+    const label=document.createElement('span');label.textContent=frame.time+' с';
+    btn.append(img,label);btn.onclick=()=>{const video=$('videoPreview');if(video)video.currentTime=Number(frame.time);};
+    grid.appendChild(btn);
+  });
+  grid.style.display='grid';
+}
+async function seekFrame(vid,sec){
+  if(Math.abs(vid.currentTime-sec)<0.015 && vid.readyState>=2)return;
+  await new Promise((resolve,reject)=>{
+    const timer=setTimeout(()=>{vid.removeEventListener('seeked',ok);reject(Error('Не удалось перейти к кадру видео.'));},15000);
+    function ok(){clearTimeout(timer);resolve();}
+    vid.addEventListener('seeked',ok,{once:true});vid.currentTime=sec;
+  });
+}
 async function framesVideo(){
   const vid=document.createElement('video');vid.preload='auto';vid.muted=true;vid.playsInline=true;vid.src=objectURL;
   await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('Не удалось прочитать видео. Проверь формат/кодек (лучше MP4 H.264).')),18000);vid.onloadedmetadata=()=>{clearTimeout(timer);resolve();};vid.onerror=()=>{clearTimeout(timer);reject(new Error('Браузер не поддерживает кодек видео. Попробуй MP4 H.264 или WebM.'));};});
   if(!Number.isFinite(vid.duration)||vid.duration<=0||!vid.videoWidth)throw Error('Не удалось определить длительность и размеры видео.');
-  const count=Math.min(8,Number($('frameCount').value));const out=[];
+  const adaptive=$('frameCount').value==='adaptive';
+  const count=adaptive?8:Math.min(8,Math.max(3,Number($('frameCount').value)||5));
+  const minTime=Math.min(0.05,vid.duration/5),maxTime=Math.max(minTime+0.001,vid.duration-Math.min(0.05,vid.duration/5));
+  const at=(i,total)=>minTime+(maxTime-minTime)*i/Math.max(1,total-1);
+  const out=[];
   try{
-    for(let n=0;n<count;n++){
-      const sec=Math.max(0,Math.min(vid.duration-0.04,(n+0.5)*vid.duration/count));
-      await new Promise((resolve,reject)=>{
-        const timer=setTimeout(()=>{vid.removeEventListener('seeked',ok);reject(Error('Не удалось прочитать кадр видео.'));},14000);
-        function ok(){clearTimeout(timer);resolve();}
-        vid.addEventListener('seeked',ok,{once:true});vid.currentTime=sec;
-      });
-      await pause(40);
-      out.push({time:sec.toFixed(2),data:canvasData(vid,vid.videoWidth,vid.videoHeight,depth==='deep'?1200:980)});
-      status('Извлечение кадров: '+(n+1)+'/'+count+'…');stageUpdate('Извлечение кадров: '+(n+1)+'/'+count+'…');
+    let points;
+    if(adaptive){
+      const candidates=[];
+      for(let i=0;i<18;i++){
+        const sec=at(i,18);
+        await seekFrame(vid,sec);await pause(35);
+        candidates.push({time:sec,feature:frameFeature(vid)});
+        const msg='Поиск ключевых изменений: '+(i+1)+'/18…';status(msg);stageUpdate(msg);
+      }
+      points=chooseMotionCandidates(candidates,count).map(item=>item.time);
+      stageUpdate('Выбрано '+points.length+' ключевых кадров по визуальным изменениям.');
+    }else points=Array.from({length:count},(_,i)=>at(i,count));
+    for(let n=0;n<points.length;n++){
+      await seekFrame(vid,points[n]);await pause(35);
+      out.push({time:points[n].toFixed(2),data:canvasData(vid,vid.videoWidth,vid.videoHeight,depth==='deep'?1200:980)});
+      const msg='Извлечение кадров: '+(n+1)+'/'+points.length+'…';status(msg);stageUpdate(msg);
     }
+    renderFrameSamples(out);
     return out;
   }finally{vid.removeAttribute('src');vid.load();}
 }
@@ -199,7 +271,8 @@ $('run').onclick=async()=>{
   currentJob=(crypto.randomUUID ? crypto.randomUUID().replace(/-/g,'') : Array.from(crypto.getRandomValues(new Uint8Array(16)), x=>x.toString(16).padStart(2,'0')).join(''));
   $('stop').disabled=false;$('partialBox').style.display='none';$('partialPreview').textContent='';$('saveDraft').disabled=true;
   try{status('Подготовка исходника…');const images=type==='video'?await framesVideo():await framesImage();status('Отправка данных в локальную Qwen…');
-    await streamAnalysis({kind:type,depth,target:$('target').value,job_id:currentJob,images});
+    await streamAnalysis({kind:type,depth,target:$('target').value,job_id:currentJob,
+      sampling_mode:type==='video' && $('frameCount').value==='adaptive'?'adaptive':'uniform',images});
   }catch(err){stageEnd(true);status('Ошибка: '+err.message,true);}
   finally{b.disabled=false;b.textContent='Извлечь промпты';$('stop').disabled=true;currentJob=null;}
 };
