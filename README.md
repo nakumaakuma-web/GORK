@@ -1,4 +1,4 @@
-# Prompt Extractor Studio v0.8.0
+# Prompt Extractor Studio v0.10.0
 
 Local image prompt reverse analysis and **separate time-oriented video analysis** via Qwen3.5/llama.cpp and FramePack F1 Motion Director.
 
@@ -14,3 +14,5 @@ See [README_RU.md](README_RU.md) for Russian instructions. Local UI: http://127.
 
 
 PES v0.9.0: Beginner motion brief -> local Qwen -> one FramePack F1 prompt, advanced preserved.
+
+PES v0.10.0: dedicated Photo-to-Video mode; canonical photo + separate motion video + optional Russian text, one FramePack prompt.

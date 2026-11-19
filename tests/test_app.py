@@ -175,7 +175,7 @@ class Tests(unittest.TestCase):
         with urllib.request.urlopen(self.url + '/api/version') as response:
             version = json.load(response)['version']
         self.assertEqual(version, app.updater.VERSION)
-        self.assertEqual(version, '0.9.0')
+        self.assertEqual(version, '0.10.0')
 
     def test_home_health(self):
         with urllib.request.urlopen(self.url) as r:

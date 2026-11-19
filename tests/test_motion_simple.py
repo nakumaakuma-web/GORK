@@ -101,7 +101,7 @@ class MotionSimpleTests(unittest.TestCase):
     def test_manifest_checksums_match_every_file(self):
         root=Path(__file__).resolve().parents[1]
         manifest=json.loads((root/'update-manifest.json').read_text(encoding='utf-8'))
-        self.assertEqual(manifest['version'],'0.9.0')
+        self.assertEqual(manifest['version'],'0.10.0')
         for entry in manifest['files']:
             p=root/entry['path']
             self.assertTrue(p.exists(),entry['path'])

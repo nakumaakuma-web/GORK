@@ -50,7 +50,7 @@
 #videoControls .label{font-size:13px;font-weight:650}
 #sourceModes .chip{font-size:14px;padding:12px}
 
-/* v0.9.0: cursor-adjacent contextual help and removable uploaded source. */
+/* v0.10.0: cursor-adjacent contextual help and removable uploaded source. */
 #pesTooltip{position:fixed;left:0;top:0;z-index:9999;max-width:min(370px,calc(100vw - 20px));padding:11px 14px;
  background:#242c3a;color:#f4f6ff;border:1px solid #8295b5;border-radius:11px;
  box-shadow:0 9px 28px #0009;font:13px/1.5 'Segoe UI',Arial,sans-serif;pointer-events:none;
@@ -82,10 +82,87 @@
 .quickDirector .btn.primary{background:#b486cb}
 @media(max-width:950px){.quickOpts{grid-template-columns:repeat(2,minmax(120px,1fr))}.quickResultGrid{grid-template-columns:1fr}}
 @media(max-width:500px){.quickOpts{grid-template-columns:1fr}}
+
+/* v0.10 dedicated Photo → Video workspace. */
+.sourceNav{padding:14px 24px;background:#121722;border-bottom:1px solid #303b50}
+.sourceNavInner{max-width:1450px;margin:auto;display:flex;align-items:center;gap:22px}
+.sourceNavCaption{font-size:13px;color:#bcc6d9;white-space:nowrap;font-weight:600}
+#sourceModes{flex:1;display:flex;gap:8px}
+#sourceModes .chip{font-size:14px;padding:12px 16px}
+.p2vWorkspace{max-width:1450px;margin:22px auto 0;padding:0 24px 30px}
+.p2vHeader{display:flex;align-items:start;justify-content:space-between;gap:18px;margin-bottom:16px}
+.p2vHeader h2{font-size:23px;margin:0 0 8px}
+.p2vHeader p{line-height:1.6;margin:0;max-width:900px}
+.p2vBadge{white-space:nowrap;border:1px solid #686283;border-radius:999px;padding:8px 12px;color:#d9d0f7;font-size:12px}
+.p2vColumns{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:18px}
+.p2vWorkspace h3{font-size:16px;margin:0 0 10px}
+.p2vWorkspace .card.pad{padding:20px}
+.p2vMedia{position:relative;min-height:215px;border:1px dashed #7584a2;background:#101722;border-radius:12px;display:flex;align-items:center;justify-content:center;cursor:pointer;overflow:hidden;text-align:center;color:#cfbedc;font-weight:650}
+.p2vMedia:hover{border-color:#ddafe4}
+.p2vMedia img,.p2vMedia video{max-width:100%;max-height:320px;width:100%;object-fit:contain}
+.p2vMedia [hidden]{display:none!important}
+.p2vClear{position:absolute;top:10px;right:10px;width:36px;height:36px;z-index:4;border-radius:50%;background:#282b39eb;border:1px solid #a6adbe;color:white;font-size:24px;cursor:pointer}
+.p2vMeta{font-size:12px;line-height:1.55;color:#b8c8dd;white-space:pre-wrap;overflow-wrap:anywhere;padding:8px 2px}
+.p2vRow{display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin:12px 0 0}
+.p2vSettings{display:grid;grid-template-columns:repeat(4,minmax(120px,1fr));gap:12px;margin:18px 0 10px}
+.p2vOrder,.p2vOutput{margin-bottom:18px}
+.p2vOrder #p2vText{min-height:110px}
+.p2vOrder #p2vBuild{margin:12px 0;width:100%;max-width:430px}
+.p2vChecks{margin-bottom:12px}
+.p2vOutput textarea{min-height:170px}
+@media(max-width:960px){.sourceNavInner{flex-direction:column;align-items:stretch;gap:8px}.p2vColumns{grid-template-columns:1fr}.p2vSettings{grid-template-columns:repeat(2,minmax(110px,1fr))}}
+@media(max-width:600px){#sourceModes{flex-direction:column}.p2vWorkspace{padding:0 14px}.p2vHeader{display:block}.p2vBadge{display:inline-block;margin-top:10px}.p2vSettings{grid-template-columns:1fr}}
 </style></head>
-<body><header><div><h1>Prompt <span>Extractor</span> Studio <small style="font-size:12px;vertical-align:middle;color:#8791a2"><span id="versionHeader">v0.9.0</span></small></h1><div class="sub">Изображения → промпты · Видео → действия, хронология, FramePack · Qwen3.5 · Локально</div></div><div class="status"><div class="dot" id="dot"></div><span id="modelStatus">Проверка Qwen…</span></div></header>
-<main><section class="card"><div class="pad"><h2>01 / Источник и режим</h2>
-<div class="field"><div class="label">Выбери тип анализа</div><div class="radio" id="sourceModes"><button id="modePhoto" type="button" class="chip active">🖼️ Изображение</button><button id="modeVideo" type="button" class="chip">🎬 Видео</button></div></div>
+<body><header><div><h1>Prompt <span>Extractor</span> Studio <small style="font-size:12px;vertical-align:middle;color:#8791a2"><span id="versionHeader">v0.10.0</span></small></h1><div class="sub">Изображение · Видео · Фото → Видео · Qwen3.5 · FramePack · Локально</div></div><div class="status"><div class="dot" id="dot"></div><span id="modelStatus">Проверка Qwen…</span></div></header>
+<nav class="sourceNav" aria-label="Режим программы"><div class="sourceNavInner"><div class="sourceNavCaption">Что нужно сделать?</div><div class="radio" id="sourceModes"><button id="modePhoto" type="button" class="chip active">🖼️ Изображение</button><button id="modeVideo" type="button" class="chip">🎬 Видео</button><button id="modeCombine" type="button" class="chip" data-help="Главный режим анимации: фотография задаёт внешность, видео-образец или твои слова — движение. Можно использовать оба источника движения вместе.">🎞️ Фото → Видео</button></div></div></nav>
+
+<section class="p2vWorkspace" id="p2vWorkspace" hidden aria-label="Фото в видео">
+  <div class="p2vHeader"><div><h2>🎞️ Фото → Видео</h2><p class="muted">Внешность и начальная сцена берутся с <b>фотографии</b>. Движение — из <b>видео-образца, текста или обоих</b>. Qwen соберёт один английский Prompt для FramePack.</p></div><span class="p2vBadge">10 секунд · FramePack F1</span></div>
+  <div class="p2vColumns">
+    <section class="card pad"><h3>01 · Исходный персонаж</h3>
+      <p class="muted">Загрузи <b>ту же фотографию</b>, которая будет установлена в FramePack. Её внешность, одежду, стиль и начальную позу сохраняем.</p>
+      <div class="p2vMedia" id="p2vPhotoBox" data-help="Исходная фотография важнее текста видео: она определяет персонажа и исходную позу. Нажми, чтобы выбрать PNG/JPG/WebP.">
+        <span id="p2vPhotoEmpty">＋ Загрузить фото персонажа</span><img id="p2vPhotoPreview" alt="Исходный кадр для анимации" hidden/>
+        <button id="p2vPhotoClear" class="p2vClear" type="button" hidden aria-label="Убрать фотографию">×</button>
+      </div><input id="p2vPhotoFile" type="file" accept="image/png,image/jpeg,image/webp" hidden/>
+      <div class="p2vMeta" id="p2vPhotoName">Фотография не выбрана</div>
+    </section>
+    <section class="card pad"><h3>02 · Движение / видео-образец <span class="muted">необязательно</span></h3>
+      <p class="muted">Можешь взять характер движения из другого видео. <b>Внешность из видео не переносится.</b> Либо пропусти этот шаг и опиши действие словами ниже.</p>
+      <div class="p2vMedia" id="p2vVideoBox" data-help="Видео служит образцом движения. Это не новый персонаж и не исходный кадр FramePack.">
+        <span id="p2vVideoEmpty">＋ Загрузить видео-образец</span><video id="p2vVideoPreview" controls playsinline muted hidden></video>
+        <button id="p2vVideoClear" class="p2vClear" type="button" hidden aria-label="Убрать видео">×</button>
+      </div><input id="p2vVideoFile" type="file" accept="video/*,.webm,.mp4,.mov,.mkv" hidden/>
+      <div class="p2vMeta" id="p2vVideoName">Видео не выбрано</div>
+      <div class="p2vRow"><button id="p2vAnalyzeVideo" class="btn secondary" type="button" disabled data-help="Разбирает временные моменты видео и выделяет движение, не заменяя внешность персонажа с фото.">🔎 Извлечь движение</button><button id="p2vImportVideo" class="btn secondary" type="button" data-help="Импортируй ранее сохранённый JSON из режима «Видео», чтобы не анализировать ролик снова.">Открыть видеоотчёт JSON</button><input id="p2vReportFile" type="file" accept=".json,application/json" hidden/></div>
+      <p id="p2vVideoStatus" class="muted" role="status">Видеоанализ не загружен. Можно работать только с описанием.</p>
+      <div class="p2vMeta" id="p2vRefDetails"></div>
+    </section>
+  </div>
+  <section class="card pad p2vOrder"><h3>03 · Твой заказ на русском</h3>
+    <label class="dirLabel" for="p2vText" data-help="Опиши простыми словами, что персонаж делает. Даже если есть видео, здесь можно изменить движение, скорость или камеру. Qwen сама составит промпт для FramePack.">Что должно происходить? <span class="muted">(если есть видео — можно уточнить или изменить его движение)</span></label>
+    <textarea id="p2vText" class="dirInput" rows="3" placeholder="Например: персонаж плавно поворачивает голову и улыбается. Из видео взять только ритм движения, камеру оставить неподвижной."></textarea>
+    <div class="p2vSettings">
+      <label class="dirLabel">Длительность<select id="p2vDuration"><option value="5">5 сек · тест</option><option value="10" selected>10 сек · стандарт</option><option value="15">15 сек</option></select></label>
+      <label class="dirLabel">Стиль<select id="p2vStyle"><option value="auto" selected>Как на фотографии</option><option value="anime">Аниме</option><option value="semi">Полуреализм</option><option value="realistic">Реализм</option></select></label>
+      <label class="dirLabel">Камера<select id="p2vCamera"><option value="locked" selected>Статичная</option><option value="push">Плавное приближение</option><option value="pan">Панорама</option><option value="follow">Следует за персонажем</option></select></label>
+      <label class="dirLabel">Темп<select id="p2vPace"><option value="natural" selected>Естественный</option><option value="gentle">Медленный</option><option value="dynamic">Динамичный</option></select></label>
+    </div>
+    <div class="p2vRow p2vChecks"><label class="dirCheck"><input id="p2vLoop" type="checkbox"/> 🔁 Подготовить для повтора</label><label class="dirCheck"><input id="p2vAdult" type="checkbox"/> 18+ (совершеннолетние)</label><label class="dirCheck" id="p2vAdultConfirmWrap" hidden><input id="p2vAdultConfirm" type="checkbox"/> Подтверждаю 18+ всех участников</label></div>
+    <button id="p2vBuild" class="btn" type="button" data-help="Qwen совмещает персонажа с фото, движения из видео и твои поправки. Возвращает один FramePack Prompt на английском и перевод на русском.">🧠 Собрать единый промпт FramePack</button>
+    <div id="p2vStatus" class="dirStatus" role="status" aria-live="polite">Сначала выбери фото. Затем добавь видео, текст или оба источника движения.</div>
+    <div id="p2vSuggestions" hidden><b>Действие не определено. Выбери вариант:</b><div id="p2vChoices" class="quickChoices"></div></div>
+  </section>
+  <section class="card pad p2vOutput"><h3>04 · Итог для FramePack</h3>
+    <div class="quickResultGrid"><label class="dirLabel">Русский вариант · проверь смысл<textarea id="p2vOutputRu" class="dirInput" rows="5"></textarea></label><label class="dirLabel">Единый FramePack Prompt · EN<textarea id="p2vOutputEn" class="dirInput" rows="5"></textarea></label></div>
+    <div id="p2vCompatibility" class="p2vMeta" aria-live="polite">Проверка совместимости появится после сборки.</div>
+    <div class="p2vRow"><button id="p2vCopy" class="btn secondary" type="button">📋 Скопировать EN</button><button id="p2vSave" class="btn secondary" type="button">💾 Сохранить TXT</button></div>
+    <p class="muted">В FramePack уже должна быть загружена <b>эта фотография</b>. Вставь результат в его единственное поле Prompt. Длительность 10 секунд установи в самом FramePack. Анализ видео основан на временной выборке и может ошибаться.</p>
+  </section>
+</section>
+
+<main id="analysisWorkspace"><section class="card"><div class="pad"><h2>01 / Источник и режим</h2>
+<p class="muted" id="analysisModeInfo">Анализирует один исходник. Для соединения внешности с движением выбери «Фото → Видео» выше.</p>
 <div id="videoControls" hidden>
   <div class="field"><div class="label">Что анализируем в видео?</div>
     <select id="videoContent"><option value="standard">Обычное видео</option><option value="adult">18+ · Видео для взрослых</option></select>
@@ -98,7 +175,7 @@
 <div class="field" id="photoTarget"><div class="label">Назначение промпта</div><select id="target"><option value="CyberIllustrious Semi-Real V4 / Illustrious XL">CyberIllustrious V4 (изображения)</option><option value="FramePack F1 / HunyuanVideo">FramePack (видео)</option><option value="Универсальный генератор изображений">Универсальный промпт</option></select></div>
 <div class="field"><div id="frameStrip" class="frameStrip" style="display:none" aria-label="Подтверждённые временные точки видео"></div></div>
 <div class="field" style="padding:12px;border:1px solid #41485b;border-radius:10px">
-  <div class="label">Обновления программы <span id="studioVersion">v0.9.0</span></div>
+  <div class="label">Обновления программы <span id="studioVersion">v0.10.0</span></div>
   <div style="display:flex;gap:8px;flex-wrap:wrap"><button id="checkUpdate" class="btn secondary">Проверить обновления</button><button id="installUpdate" class="btn secondary" disabled>Установить обновление</button></div>
   <p class="muted" id="updateStatus" aria-live="polite">Источник обновлений пока не подключён. Qwen и FramePack не затрагиваются.</p>
 </div>
@@ -170,5 +247,5 @@
     </div>
   </div></details>
 </section>
-<div class="foot">Prompt Extractor Studio · v0.9.0. Negative Prompt формируется заново; исходный авторский prompt из пикселей достоверно извлечь невозможно. Режиссёр анимации подготавливает Motion Prompt и может отправить запрос в локальный FramePack F1 после проверки API. Генерация на GPU не гарантируется.</div>
+<div class="foot">Prompt Extractor Studio · v0.10.0. Negative Prompt формируется заново; исходный авторский prompt из пикселей достоверно извлечь невозможно. Режиссёр анимации подготавливает Motion Prompt и может отправить запрос в локальный FramePack F1 после проверки API. Генерация на GPU не гарантируется.</div>
 <div id="pesTooltip" role="tooltip" hidden></div><script src="/ui.js"></script></body></html>

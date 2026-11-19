@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-VERSION = '0.9.0'
+VERSION = '0.10.0'
 CONFIG_NAME = 'update_config.json'
 DEFAULT_MANIFEST_URL = 'https://raw.githubusercontent.com/nakumaakuma-web/GORK/main/update-manifest.json'
 # Files deliberately limited; models, user data, saved results and configs untouched.
@@ -28,6 +28,7 @@ UPDATEABLE = frozenset({
     'app.py', 'updater.py', 'ui/index.html', 'ui/ui.js',
     'start-all.cmd', 'start-studio.cmd', 'README_RU.md',
     'tests/test_app.py', 'tests/test_updater.py',
+    'tests/test_motion_simple.py', 'tests/test_photo_video.py',
 })
 MAX_BYTES_PER_FILE = 2 * 1024 * 1024
 MAX_MANIFEST_BYTES = 128 * 1024

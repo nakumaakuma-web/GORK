@@ -45,21 +45,24 @@ const PES_HELP = {
 };
 function getVideoMode(){return $('videoContent').value;}
 function refreshSourceMode(){
-  const isVideo=sourceMode==='video';
+  const isVideo=sourceMode==='video',isCombo=sourceMode==='combine';
   groups=isVideo?videoGroups.filter(([k])=>k!=='adult_context_ru'||getVideoMode()==='adult'):photoGroups;
+  $('analysisWorkspace').hidden=isCombo;
+  $('p2vWorkspace').hidden=!isCombo;
   $('videoControls').hidden=!isVideo;
   $('photoTarget').hidden=isVideo;
-  $('motionDirector').hidden=false; // FramePack brief is usable from a photo or an analyzed video.
+  $('motionDirector').hidden=isCombo; // FramePack brief is usable from a photo or an analyzed video.
   $('file').accept=isVideo?'video/*,.mp4,.webm,.mov,.mkv':'image/*,.png,.jpg,.jpeg,.webp';
   $('drop').querySelector('.empty strong').textContent=isVideo?'Выбрать видео':'Выбрать изображение';
   $('videoAdultNotice').hidden=!isVideo||getVideoMode()!=='adult';
-  $('modePhoto').classList.toggle('active',!isVideo);
+  $('modePhoto').classList.toggle('active',!isVideo&&!isCombo);
   $('modeVideo').classList.toggle('active',isVideo);
+  $('modeCombine').classList.toggle('active',isCombo);
   $('run').textContent=isVideo?'Проанализировать видео':'Извлечь промпты из изображения';
   active=groups[0][0];render();
 }
 function selectSourceMode(newMode){
-  if(type&&type!==newMode){
+  if(type&&newMode!=='combine'&&type!==newMode){
     chosen=null;type=null;
     if(objectURL){URL.revokeObjectURL(objectURL);objectURL=null;}
     $('photoPreview').removeAttribute('src');$('videoPreview').removeAttribute('src');
@@ -70,6 +73,7 @@ function selectSourceMode(newMode){
 }
 $('modePhoto').onclick=()=>selectSourceMode('photo');
 $('modeVideo').onclick=()=>selectSourceMode('video');
+$('modeCombine').onclick=()=>selectSourceMode('combine');
 $('videoContent').onchange=()=>refreshSourceMode();
 
 function status(s, danger=false){ $('statusline').textContent=s; $('statusline').style.color=danger?'#f09d99':'#d6bbdf'; }
@@ -228,14 +232,14 @@ async function seekFrame(vid,sec){
     vid.addEventListener('seeked',ok,{once:true});vid.currentTime=sec;
   });
 }
-async function framesVideo(){
-  const vid=document.createElement('video');vid.preload='auto';vid.muted=true;vid.playsInline=true;vid.src=objectURL;
+async function framesVideo(videoObjectURL=objectURL,opts={}){
+  const vid=document.createElement('video');vid.preload='auto';vid.muted=true;vid.playsInline=true;vid.src=videoObjectURL;
   await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('Не удалось открыть видео. Лучше MP4 H.264.')),18000);
     vid.onloadedmetadata=()=>{clearTimeout(timer);resolve();};vid.onerror=()=>{clearTimeout(timer);reject(Error('Браузер не поддерживает видео.'));};});
   if(!Number.isFinite(vid.duration)||vid.duration<=0||!vid.videoWidth)throw Error('Недопустимая длительность видео.');
   const detailed=$('videoDetail').value==='detailed'||getVideoMode()==='adult';
-  const samples=detailed?20:12;
-  const checks=detailed?96:48;
+  const samples=opts.samples||(detailed?20:12);
+  const checks=opts.videoRef?Math.min(opts.checks||48,Math.max(samples+2,Math.floor(vid.duration*10))):(opts.checks||(detailed?96:48));
   const minTime=Math.min(0.03,vid.duration/10),maxTime=Math.max(minTime+0.001,vid.duration-Math.min(0.03,vid.duration/10));
   const at=(i,total)=>minTime+(maxTime-minTime)*i/Math.max(1,total-1);
   const candidates=[],trace=[],out=[];
@@ -246,15 +250,15 @@ async function framesVideo(){
       const feature=frameFeature(vid);const diff=prev?visualDifference(feature,prev):0;
       prev=feature;trace.push({time:sec.toFixed(3),change:Number(diff.toFixed(2))});
       candidates.push({time:sec,feature});
-      if(i%4===0||i===checks-1){const msg='Видеопросмотр: '+(i+1)+' из '+checks+' временных точек';status(msg);stageUpdate(msg);}
+      if(i%4===0||i===checks-1){const msg='Видеопросмотр: '+(i+1)+' из '+checks+' временных точек';if(opts.onProgress)opts.onProgress(msg);else{status(msg);stageUpdate(msg);}}
     }
     const picked=chooseMotionCandidates(candidates,samples);
     for(let n=0;n<picked.length;n++){
       await seekFrame(vid,picked[n].time);await pause(17);
       out.push({time:picked[n].time.toFixed(3),data:canvasData(vid,vid.videoWidth,vid.videoHeight,depth==='deep'?1050:800)});
-      const msg='Выбор видеомоментов: '+(n+1)+'/'+picked.length;status(msg);stageUpdate(msg);
+      const msg='Выбор видеомоментов: '+(n+1)+'/'+picked.length;if(opts.onProgress)opts.onProgress(msg);else{status(msg);stageUpdate(msg);}
     }
-    renderFrameSamples(out);
+    if(!opts.noStrip)renderFrameSamples(out);
     return {images:out,trace};
   }finally{vid.removeAttribute('src');vid.load();}
 }
@@ -674,6 +678,7 @@ for(const [id,help] of Object.entries(PES_FIELD_HELP)){
   if(label&&!label.dataset.help)label.dataset.help=help;
 }
 const pesTooltip=$('pesTooltip');let pesOwner=null,pesTipDelay=null,pesVisible=false;
+let pesPointerX=-1,pesPointerY=-1;
 function pesHideHelp(){clearTimeout(pesTipDelay);pesTipDelay=null;pesOwner=null;pesVisible=false;pesTooltip.hidden=true;}
 function pesMoveHelp(x,y){
   if(!pesVisible)return;
@@ -696,12 +701,13 @@ function pesShowHelp(el,x,y,delay=300){
 }
 if(matchMedia('(hover: hover)').matches){
   document.addEventListener('pointerover',e=>{
+    pesPointerX=e.clientX;pesPointerY=e.clientY;
     const el=e.target.closest?.('[data-help]');
     if(el)pesShowHelp(el,e.clientX,e.clientY);
   });
-  document.addEventListener('pointermove',e=>{if(pesOwner)pesMoveHelp(e.clientX,e.clientY)});
+  document.addEventListener('pointermove',e=>{pesPointerX=e.clientX;pesPointerY=e.clientY;if(pesOwner)pesMoveHelp(e.clientX,e.clientY)});
   document.addEventListener('pointerout',e=>{
-    if(pesOwner&&!pesOwner.contains(e.relatedTarget))pesHideHelp();
+    if(pesOwner&&pesOwner.contains(e.target)&&!pesOwner.contains(e.relatedTarget))pesHideHelp();
   });
 }
 document.addEventListener('focusin',e=>{
@@ -709,9 +715,14 @@ document.addEventListener('focusin',e=>{
   if(!el)return;
   const r=el.getBoundingClientRect();pesShowHelp(el,r.left+r.width/2,r.bottom,150);
 });
-document.addEventListener('focusout',pesHideHelp);
+document.addEventListener('focusout',e=>{if(pesOwner&&pesOwner.contains(e.target)&&!pesOwner.contains(e.relatedTarget))pesHideHelp();});
 document.addEventListener('keydown',e=>{if(e.key==='Escape')pesHideHelp();});
-window.addEventListener('scroll',pesHideHelp,true);
+window.addEventListener('scroll',()=>{
+  if(pesPointerX<0){pesHideHelp();return;}
+  const under=document.elementFromPoint(pesPointerX,pesPointerY)?.closest?.('[data-help]');
+  if(under)pesShowHelp(under,pesPointerX,pesPointerY,300);
+  else pesHideHelp();
+},true);
 
 
 // PES_SIMPLE_DIRECTOR_V090: one brief -> one FramePack Prompt; legacy advanced controls remain optional.
@@ -807,6 +818,140 @@ $('quickSave').onclick=()=>{
   download('FramePack_prompt_'+$('quickDuration').value+'sec.txt',out,'text/plain;charset=utf-8');
   quickNotice('Промпт на русском и английском сохранён в TXT.','success');
 };
+
+// Photo → Video v0.10: independent files; image identity is never sourced from the motion video.
+let p2vPhoto=null,p2vPhotoUrl=null,p2vVideo=null,p2vVideoUrl=null,p2vSections=null,p2vBusy=false;
+function p2vNotify(message,kind=''){
+  const e=$('p2vStatus');e.textContent=message;e.className='dirStatus'+(kind?' '+kind:'');
+}
+function p2vValidFile(file,video){
+  if(!file)return false;
+  if(video)return file.type.startsWith('video/')||/\.(mp4|webm|mov|mkv)$/i.test(file.name);
+  return file.type.startsWith('image/')||/\.(png|jpe?g|webp)$/i.test(file.name);
+}
+function p2vClearPhoto(){
+  if(p2vPhotoUrl)URL.revokeObjectURL(p2vPhotoUrl);
+  p2vPhoto=null;p2vPhotoUrl=null;
+  $('p2vPhotoPreview').removeAttribute('src');$('p2vPhotoPreview').hidden=true;
+  $('p2vPhotoEmpty').hidden=false;$('p2vPhotoClear').hidden=true;
+  $('p2vPhotoName').textContent='Фотография не выбрана';$('p2vPhotoFile').value='';
+}
+function p2vClearVideo(){
+  const v=$('p2vVideoPreview');v.pause();v.removeAttribute('src');v.load();
+  if(p2vVideoUrl)URL.revokeObjectURL(p2vVideoUrl);
+  p2vVideo=null;p2vVideoUrl=null;p2vSections=null;
+  v.hidden=true;$('p2vVideoEmpty').hidden=false;$('p2vVideoClear').hidden=true;
+  $('p2vVideoName').textContent='Видео не выбрано';$('p2vVideoFile').value='';
+  $('p2vVideoStatus').textContent='Референс движения очищен. Можно работать по тексту.';
+  $('p2vRefDetails').textContent='';$('p2vAnalyzeVideo').disabled=true;
+}
+$('p2vPhotoBox').onclick=e=>{if(!e.target.closest('button'))$('p2vPhotoFile').click();};
+$('p2vPhotoClear').onclick=e=>{e.stopPropagation();if(!p2vBusy)p2vClearPhoto();};
+$('p2vPhotoFile').onchange=e=>{
+  const f=e.target.files[0];if(!f)return;
+  if(!p2vValidFile(f,false)){p2vNotify('Нужна фотография PNG/JPG/WebP.','error');return;}
+  p2vClearPhoto();p2vPhoto=f;p2vPhotoUrl=URL.createObjectURL(f);
+  $('p2vPhotoPreview').src=p2vPhotoUrl;$('p2vPhotoPreview').hidden=false;$('p2vPhotoEmpty').hidden=true;
+  $('p2vPhotoClear').hidden=false;$('p2vPhotoName').textContent=f.name;
+  p2vNotify('Фото выбрано. Добавь видео для движения и/или опиши действие своими словами.');
+};
+$('p2vVideoBox').onclick=e=>{if(!e.target.closest('video,button'))$('p2vVideoFile').click();};
+$('p2vVideoClear').onclick=e=>{e.stopPropagation();if(!p2vBusy)p2vClearVideo();};
+$('p2vVideoFile').onchange=e=>{
+  const f=e.target.files[0];if(!f)return;
+  if(!p2vValidFile(f,true)){p2vNotify('Нужен видеофайл MP4/WebM/MOV/MKV.','error');return;}
+  p2vClearVideo();p2vVideo=f;p2vVideoUrl=URL.createObjectURL(f);
+  $('p2vVideoPreview').src=p2vVideoUrl;$('p2vVideoPreview').hidden=false;$('p2vVideoEmpty').hidden=true;
+  $('p2vVideoClear').hidden=false;$('p2vVideoName').textContent=f.name;
+  $('p2vVideoStatus').textContent='Нажми «Извлечь движение», чтобы Qwen разобрала видео-референс.';
+  $('p2vAnalyzeVideo').disabled=false;
+};
+$('p2vImportVideo').onclick=()=>$('p2vReportFile').click();
+$('p2vReportFile').onchange=async e=>{
+  const f=e.target.files[0];e.target.value='';if(!f)return;
+  try{
+    if(f.size>2_000_000)throw Error('JSON слишком большой.');
+    const obj=JSON.parse(await f.text());
+    if(obj.kind!=='video'&&obj.kind!=='motion_reference')throw Error('Нужен JSON видеоанализа, а не фотография.');
+    const sections=obj.sections||{};
+    if(!sections.process_ru&&!sections.timeline_ru)throw Error('В JSON нет описания движения.');
+    p2vSections=Object.fromEntries(QUICK_SOURCE_KEYS.filter(k=>typeof sections[k]==='string').map(k=>[k,sections[k]]));
+    $('p2vVideoStatus').textContent='Загружен видеоотчёт '+(obj.source_filename||f.name)+'.';
+    $('p2vRefDetails').textContent='Используются движения из готового JSON. Проверь соответствие исходному ролику.';
+    p2vNotify('Видеоотчёт принят. Можно добавить текстовые поправки и собрать промпт.','success');
+  }catch(ex){p2vNotify('Ошибка JSON: '+ex.message,'error');}
+};
+$('p2vAdult').onchange=()=>{$('p2vAdultConfirmWrap').hidden=!$('p2vAdult').checked;};
+function p2vBusyMode(state){
+  p2vBusy=state;
+  $('p2vAnalyzeVideo').disabled=state||!p2vVideo;
+  $('p2vBuild').disabled=state;
+  $('p2vPhotoClear').disabled=state;$('p2vVideoClear').disabled=state;
+}
+$('p2vAnalyzeVideo').onclick=async()=>{
+  if(!p2vVideoUrl)return p2vNotify('Сначала выбери видео.','error');
+  if($('p2vAdult').checked&&!$('p2vAdultConfirm').checked)return p2vNotify('Подтверди совершеннолетие участников для видеоанализа 18+.','error');
+  p2vBusyMode(true);
+  $('p2vVideoStatus').textContent='Сканирование временных моментов…';
+  try{
+    const video=await framesVideo(p2vVideoUrl,{samples:12,checks:48,videoRef:true,noStrip:true,
+      onProgress:s=>{$('p2vVideoStatus').textContent=s;}});
+    $('p2vVideoStatus').textContent='Qwen анализирует последовательность движений. Это может быть долго…';
+    const reply=await fetch('/api/motion/reference',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({images:video.images,temporal_trace:video.trace,rating:$('p2vAdult').checked?'adult':'standard',adults_confirmed:$('p2vAdultConfirm').checked})});
+    const result=await reply.json();if(!reply.ok)throw Error(result.error||'HTTP '+reply.status);
+    p2vSections=result.sections;
+    $('p2vVideoStatus').textContent='Движения извлечены из '+video.images.length+' кадров. Сверь с оригинальным видео.';
+    $('p2vRefDetails').textContent=[result.sections.process_ru,result.sections.rhythm_ru].filter(Boolean).join('\n').slice(0,650);
+    p2vNotify('Видео-образец готов. Добавь корректировки текста или сразу собери промпт.','success');
+  }catch(err){p2vNotify('Ошибка видеоанализа: '+err.message,'error');$('p2vVideoStatus').textContent='Анализ не завершён.';}
+  finally{p2vBusyMode(false);}
+};
+async function p2vFrame(){
+  if(!p2vPhotoUrl)throw Error('Сначала загрузи исходную фотографию персонажа.');
+  const img=new Image();img.src=p2vPhotoUrl;await img.decode();
+  return canvasData(img,img.naturalWidth,img.naturalHeight,1350);
+}
+$('p2vBuild').onclick=async()=>{
+  p2vBusyMode(true);$('p2vSuggestions').hidden=true;$('p2vChoices').replaceChildren();
+  try{
+    if(!p2vPhoto)throw Error('Загрузи исходную фотографию — она задаёт внешность и стартовую позу.');
+    const text=$('p2vText').value.trim();
+    if(!p2vSections&&!text)throw Error('Добавь видео-референс или напиши, что должно происходить.');
+    p2vNotify('Qwen согласовывает фото, движение из видео и твои уточнения…');
+    const data={source:'photo_video',request_ru:text,video_sections:p2vSections||{},image_data:await p2vFrame(),
+      duration:Number($('p2vDuration').value),style:$('p2vStyle').value,camera:$('p2vCamera').value,
+      pace:$('p2vPace').value,loop:$('p2vLoop').checked,rating:$('p2vAdult').checked?'adult':'standard',
+      adults_confirmed:$('p2vAdultConfirm').checked};
+    const resp=await fetch('/api/motion/compose',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+    const result=await resp.json();if(!resp.ok)throw Error(result.error||'HTTP '+resp.status);
+    if(result.status==='needs_action'){
+      $('p2vOutputRu').value='';$('p2vOutputEn').value='';$('p2vSuggestions').hidden=false;
+      for(const option of result.options_ru||[]){
+        const btn=document.createElement('button');btn.className='btn secondary';btn.textContent=option;
+        btn.onclick=()=>{$('p2vText').value=($('p2vText').value.trim()+'\n'+option).trim();$('p2vSuggestions').hidden=true;p2vNotify('Движение добавлено. Нажми «Собрать» повторно.');};
+        $('p2vChoices').appendChild(btn);
+      }
+      p2vNotify('Действие не определено: выбери вариант или опиши движение самостоятельно.');return;
+    }
+    $('p2vOutputRu').value=result.motion_ru||'';$('p2vOutputEn').value=result.motion_en||'';
+    $('p2vCompatibility').textContent=result.compatibility_ru||'Проверь, совместимо ли желаемое движение с исходной позой.';
+    p2vNotify('Один Motion Prompt собран. Проверь русский смысл и скопируй английский текст в FramePack.','success');
+  }catch(err){p2vNotify('Не удалось собрать: '+err.message,'error');}
+  finally{p2vBusyMode(false);}
+};
+$('p2vCopy').onclick=async()=>{
+  const value=$('p2vOutputEn').value.trim();if(!value)return p2vNotify('Сначала создай английский Prompt.','error');
+  try{await navigator.clipboard.writeText(value);p2vNotify('Prompt скопирован. В FramePack вставь Ctrl+V.','success');}
+  catch{$('p2vOutputEn').focus();$('p2vOutputEn').select();p2vNotify('Текст выделен. Нажми Ctrl+C, затем Ctrl+V в FramePack.');}
+};
+$('p2vSave').onclick=()=>{
+  const en=$('p2vOutputEn').value.trim();if(!en)return p2vNotify('Сначала создай промпт.','error');
+  const file='=== РЕЖИССЁР · RU ===\n'+$('p2vOutputRu').value+'\n\n=== FRAMEPACK · EN ===\n'+en+
+    '\n\nДлительность: '+$('p2vDuration').value+' секунд, устанавливается в FramePack.\nСовместимость:\n'+$('p2vCompatibility').textContent;
+  download('FramePack_Photo_to_Video.txt',file,'text/plain;charset=utf-8');
+  p2vNotify('Промпт RU/EN сохранён в TXT.','success');
+};
+
 // Make every remaining interactive control discoverable; explicit help above takes priority.
 for(const el of document.querySelectorAll('button,select,textarea,input[type="checkbox"],input[type="number"]')){
   if(el.dataset.help)continue;

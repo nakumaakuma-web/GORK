@@ -79,3 +79,6 @@
 
 
 PES v0.9.0: Beginner motion brief -> local Qwen -> one FramePack F1 prompt, advanced preserved.
+
+
+PES v0.10.0: отдельный экран «Фото → Видео», исходное фото + референс движения/текст, итог FramePack EN. Полноценные video-native токены по-прежнему не поддерживаются.

@@ -858,7 +858,7 @@ def validate_framepack_order(data: dict) -> dict:
     if not isinstance(data, dict):
         raise ValueError('Нужен объект заказа на видео.')
     source = data.get('source', 'description')
-    if source not in ('description', 'video_analysis'):
+    if source not in ('description', 'video_analysis', 'photo_video'):
         raise ValueError('Выбери описание или видеоанализ.')
     style = data.get('style', 'auto')
     camera = data.get('camera', 'locked')
@@ -896,6 +896,11 @@ def validate_framepack_order(data: dict) -> dict:
     image=data.get('image_data','')
     if not isinstance(image,str):raise ValueError('Некорректное изображение.')
     if image:validate_images([{'data':image}],kind='photo')
+    if source=='photo_video':
+        if not image:
+            raise ValueError('Для режима «Фото → Видео» требуется исходная фотография.')
+        if not description and not any(clean_sections.get(k) for k in ('process_ru','timeline_ru','rhythm_ru')):
+            raise ValueError('Добавь видеоотчёт движения или опиши действие своими словами.')
     return {'source':source,'style':style,'camera':camera,'pace':pace,
             'duration':duration,'loop':data.get('loop') is True,'rating':rating,
             'adults_confirmed':rating=='adult','request_ru':description,
@@ -923,9 +928,10 @@ def compose_framepack_order(data: dict) -> dict:
 Пользователь НЕ обязан знать принципы промптов. Сначала найди в его заказе ДЕЙСТВИЕ, а не только внешность.
 
 ПРАВИЛА:
-1. Если источник — собственное описание, и в нём есть только внешность, обстановка, поза либо стиль БЕЗ запрошенного движения, НЕ ПРИДУМЫВАЙ действие. Верни NEEDS_ACTION и три конкретных ненавязчивых варианта движения на русском. В этом случае MOTION_RU и MOTION_EN оставь пустыми.
-2. Если источник — готовый видеоотчёт, используй только наблюдения, подтверждённые хронологией, и отделяй сомнения. Не превращай неподтверждённые движения в факты. При отсутствии доказанных действий верни NEEDS_ACTION и три варианта, которые пользователь может выбрать.
-3. Если действие задано, преврати обычные слова в готовый единый, связный английский Motion Prompt для FramePack: кто/что движется, с какого состояния, в каком порядке, как ведёт себя камера и что сохраняется неизменным. Не придумывай новые предметы, людей, одежду или сюжет.
+1. Если источник — собственное описание ИЛИ photo_video без видеонаблюдений, и в заказе есть только внешность, обстановка, поза либо стиль БЕЗ запрошенного движения, НЕ ПРИДУМЫВАЙ действие. Верни NEEDS_ACTION и три конкретных ненавязчивых варианта движения на русском. В этом случае MOTION_RU и MOTION_EN оставь пустыми.
+2. Если источник — готовый видеоотчёт ИЛИ photo_video с видео-образцом, используй только наблюдения, подтверждённые хронологией, и отделяй сомнения. Не превращай неподтверждённые движения в факты. При отсутствии доказанных действий верни NEEDS_ACTION и три варианта, которые пользователь может выбрать.
+3. ЕСЛИ ИСТОЧНИК photo_video: НА ФОТОГРАФИИ НАХОДИТСЯ ЦЕЛЕВОЙ ПЕРСОНАЖ — только она определяет лицо, тело, одежду, художественный стиль, стартовую позу, помещение и ракурс. ВИДЕООТЧЁТ — только ОБРАЗЕЦ ДВИЖЕНИЯ, ритма и камеры; не переносить из него актёров, внешность, одежду, предметы, фон и исходные позы автоматически. ТЕКСТОВЫЙ ЗАКАЗ может уточнить и переопределить движение из видео. Конфликт между стартовой позой фото и видео разрешить адаптацией движения к фото или назвать ограничение; не фантазировать о невидимых действиях и не объявлять невозможную совместимость доказанной.
+3а. Если действие задано, преврати обычные слова в готовый единый, связный английский Motion Prompt для FramePack: кто/что движется, с какого состояния, в каком порядке, как ведёт себя камера и что сохраняется неизменным. Не придумывай новые предметы, людей, одежду или сюжет.
 4. Исходный кадр определяет внешность, одежду, композицию. Когда изображение приложено, ориентируйся на него; когда его нет, не утверждай, будто видишь его. Стороны тела не меняй.
 5. ОПИСЫВАЙ ДВИЖЕНИЕ, а не длинный перечень статичных деталей. Веди один непрерывный дубль без смены места. Текст FramePack EN: 2–6 естественных предложений, без списков, JSON, тегов модели и отрицательного поля. Пиши по-английски, не транслитом.
 6. Если включён LOOP, верни позу, направление взгляда и композицию примерно к стартовым для потенциально бесшовного повтора. Это пожелание для FramePack, не гарантия бесшовности.
@@ -942,6 +948,8 @@ READY или NEEDS_ACTION
 [готовый русский текст, только при READY]
 ===MOTION_EN===
 [готовый единый английский prompt, только при READY]
+===COMPATIBILITY_RU===
+[одна-две фразы: что было адаптировано под фото или что неизвестно; при остальных источниках можно оставить пустым]
 
 ИСТОЧНИК: {source}
 ЗАКАЗ НА РУССКОМ: {request}
@@ -959,9 +967,9 @@ READY или NEEDS_ACTION
            loop='да, возврат к стартовой фазе' if order['loop'] else 'нет',rating=order['rating'])
     frames=[{'time':'','data':order['image_data']}] if order['image_data'] else []
     raw=_llama_request(instruction,frames,1500,
-                      system_message='Верни только четыре раздела ===STATUS===, ===OPTIONS_RU===, ===MOTION_RU===, ===MOTION_EN===. Без пояснений.')
+                      system_message='Верни только структурированные разделы ===STATUS===, ===OPTIONS_RU===, ===MOTION_RU===, ===MOTION_EN===, ===COMPATIBILITY_RU===. Без пояснений.')
     status=_motion_extract(raw,'STATUS').upper().splitlines()[0].strip() if _motion_extract(raw,'STATUS') else ''
-    ru=_motion_extract(raw,'MOTION_RU');en=_motion_extract(raw,'MOTION_EN')
+    ru=_motion_extract(raw,'MOTION_RU');en=_motion_extract(raw,'MOTION_EN');compat=_motion_extract(raw,'COMPATIBILITY_RU')
     if status=='NEEDS_ACTION':
         options=_motion_choices(_motion_extract(raw,'OPTIONS_RU'))
         fillers=['Добавить лёгкое естественное движение, сохраняя исходную позу.',
@@ -989,7 +997,60 @@ READY или NEEDS_ACTION
     if len(final)>6500:raise ValueError('Получился слишком длинный промпт.')
     return {'status':'ready','options_ru':[],'motion_ru':ru,'motion_en':final,
             'project':{k:v for k,v in order.items() if k!='image_data'},
+            'compatibility_ru':compat or ('Совместимость фотографии и движения моделью не подтверждена; проверь исходную позу, количество персонажей и ракурс.' if order['source']=='photo_video' else ''),
             'note':'Один англоязычный Prompt для уже открытого FramePack. Длительность необходимо выставить отдельно в FramePack; идеальный цикл не гарантирован.'}
+
+
+# v0.10: read the movement from a separate reference video, never transplant its identity.
+MOTION_REFERENCE_FIELDS = ('process_ru','rhythm_ru','camera_ru','timeline_ru','interactions_ru','uncertainty_ru')
+
+def analyze_motion_reference(data: dict) -> dict:
+    if not isinstance(data, dict):
+        raise ValueError('Некорректные данные видео-образца.')
+    rating=data.get('rating','standard')
+    if rating not in ('standard','adult'):
+        raise ValueError('Неизвестный режим видео-референса.')
+    if rating=='adult' and data.get('adults_confirmed') is not True:
+        raise ValueError('Для 18+ подтвердите совершеннолетие всех участников.')
+    frames=data.get('images',[])
+    validate_images(frames,kind='video')
+    if not 2<=len(frames)<=12:
+        raise ValueError('Видео-референс должен содержать 2–12 последовательных наблюдений.')
+    last=-1.0
+    for f in frames:
+        try: timestamp=float(f.get('time',''))
+        except (TypeError,ValueError):raise ValueError('У кадров должны быть корректные метки времени.')
+        if not 0<=timestamp<=7200 or timestamp<=last:raise ValueError('Временные метки должны идти по возрастанию.')
+        last=timestamp
+    # Chunking lets the small local GPU preserve the order without passing 12 full frames at once.
+    observations=[]
+    for offset in range(0,len(frames),4):
+        group=frames[offset:offset+4]
+        prompt=('Ты анализируешь фрагмент ВИДЕО-РЕФЕРЕНСА ДВИЖЕНИЯ. Соседние кадры упорядочены по времени. '
+                'Укажи только достоверные изменения позы, направления, скорости, контактов и камеры с метками времени. '
+                'НЕ перечисляй внешность людей, их одежду, место действия или неподвижную позу. '
+                'Если выбрана категория 18+, удели повышенное внимание последовательности и контакту, но не делай выводы о возрасте или согласии по внешности. '
+                'Не выводи тип движения из одной общей метрики изменения пикселей. '
+                'Не утверждай отсутствие движения между непросмотренными моментами. '
+                'Если недостаточно наблюдений, прямо отметь неизвестное. '
+                'Ответ по-русски, компактно. Временные точки: '+', '.join(str(x.get('time')) for x in group)+' сек.')
+        observations.append(_llama_request(prompt,group,950))
+    consolidated='\n\n'.join(observations)
+    final_prompt=('Объедини ОПИСАНИЯ ВРЕМЕННЫХ ИЗМЕНЕНИЙ из нескольких частей одного видео. '
+                  'Только действительно отмеченное в тексте, не додумывай промежуточные фазы, не заявляй '
+                  'об абсолютно неподвижной сцене только по малому общему изменению пикселей. '
+                  'Разделы на русском, каждый отдельным маркером:\n'
+                  '===PROCESS_RU===\n[действие во времени]\n===RHYTHM_RU===\n[темп, ритм; если нельзя определить — так и скажи]\n'
+                  '===CAMERA_RU===\n[камера]\n===TIMELINE_RU===\n[изменения с подтверждёнными таймкодами]\n'
+                  '===INTERACTIONS_RU===\n[подтверждённые взаимодействия]\n===UNCERTAINTY_RU===\n[что неизвестно]\n\n'
+                  'Наблюдения:\n'+consolidated[:14800])
+    raw=_llama_request(final_prompt,[],1400)
+    sections={key:_motion_extract(raw,key.upper()) for key in MOTION_REFERENCE_FIELDS}
+    if not sections['process_ru'] or not sections['timeline_ru']:
+        raise ValueError('Qwen не сформировала подтверждённые движения и хронологию. Не подменяй их статичным описанием.')
+    return {'kind':'motion_reference','sections':sections,
+            'frame_times':[str(f['time']) for f in frames],
+            'note':'Вывод основан на отобранных временных кадрах, не на полном видеопотоке. Сверь движение с оригиналом.'}
 
 def _framepack_origin(url: str) -> str:
     if not isinstance(url, str) or len(url) > 70:
@@ -1235,7 +1296,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urllib.parse.urlsplit(self.path).path
-        if path in ('/api/motion/build','/api/motion/compose','/api/framepack/probe','/api/framepack/generate'):
+        if path in ('/api/motion/build','/api/motion/compose','/api/motion/reference','/api/framepack/probe','/api/framepack/generate'):
             origin_header=self.headers.get('Origin','')
             valid_origins={'http://127.0.0.1:%s'%self.server.server_address[1],
                            'http://localhost:%s'%self.server.server_address[1]}
@@ -1273,6 +1334,18 @@ class Handler(BaseHTTPRequestHandler):
                     return self._reply(400,json.dumps({'error':str(exc)},ensure_ascii=False).encode())
                 except Exception as exc:
                     return self._reply(500,json.dumps({'error':'Сборка Motion Prompt не удалась: '+str(exc)[:240]},ensure_ascii=False).encode())
+                finally:
+                    _gpu_job_lock.release()
+            if path=='/api/motion/reference':
+                if not _gpu_job_lock.acquire(blocking=False):
+                    return self._reply(429,json.dumps({'error':'Qwen занята другим анализом.'},ensure_ascii=False).encode())
+                try:
+                    result=analyze_motion_reference(data)
+                    return self._reply(200,json.dumps(result,ensure_ascii=False).encode())
+                except ValueError as exc:
+                    return self._reply(400,json.dumps({'error':str(exc)},ensure_ascii=False).encode())
+                except Exception as exc:
+                    return self._reply(500,json.dumps({'error':'Ошибка просмотра видео-образца: '+str(exc)[:260]},ensure_ascii=False).encode())
                 finally:
                     _gpu_job_lock.release()
             if path=='/api/framepack/probe':
