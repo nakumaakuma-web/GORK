@@ -1,52 +1,52 @@
 {
-    "application":  "prompt-extractor-studio",
-    "version":  "0.8.1",
-    "notes":  "v0.8.1: подсказки при наведении для вкладок и настроек; кнопка × для удаления загруженного изображения/видео без удаления файла и результатов. Модели не затрагиваются.",
-    "files":  [
-                  {
-                      "path":  "app.py",
-                      "size":  102481,
-                      "sha256":  "ab5961880ea61c3cb72810b6c61e5150532ac4404fda395e98744a0d05d5ab94"
-                  },
-                  {
-                      "path":  "updater.py",
-                      "size":  9320,
-                      "sha256":  "2b324615a5eefb0bd997eb2b40f07636f5c4f00341e596547a965faaef389e47"
-                  },
-                  {
-                      "path":  "ui/index.html",
-                      "size":  26134,
-                      "sha256":  "78c23952a3ec71baeac1e87f1b1e54dbc62c2af04b07c2d1ea7c415145ceeb65"
-                  },
-                  {
-                      "path":  "ui/ui.js",
-                      "size":  54503,
-                      "sha256":  "4aea0afcf44cc09399378b2ef1b47eaf15fc5ec9920c529147778dc5856ac376"
-                  },
-                  {
-                      "path":  "start-all.cmd",
-                      "size":  993,
-                      "sha256":  "28acf349d54760daa799f0dbe42e3a2b31d3bc8de09c5ec9c4836a72752aa8aa"
-                  },
-                  {
-                      "path":  "start-studio.cmd",
-                      "size":  281,
-                      "sha256":  "49ec19977fcc1a852cad7901e1911576e564078b0ce25760956c55146a56754c"
-                  },
-                  {
-                      "path":  "README_RU.md",
-                      "size":  6659,
-                      "sha256":  "8ea4fbc5d956e7d3f5f658dfad9cedcbf09b2592df3579fcd16da284dc362fe5"
-                  },
-                  {
-                      "path":  "tests/test_app.py",
-                      "size":  46276,
-                      "sha256":  "bf16984a57ccc0877d921e7d3dc72ecfed5de796c067c2b6feba8166dcdbc14b"
-                  },
-                  {
-                      "path":  "tests/test_updater.py",
-                      "size":  5128,
-                      "sha256":  "76fdbc759b6fe1079eb745b0e8ab4a39a093d560301ff55b7acec11845c0421a"
-                  }
-              ]
+  "application": "prompt-extractor-studio",
+  "version": "0.9.0",
+  "notes": "v0.9: beginner FramePack prompt director (image or video report), Qwen RU/EN, 10-second default, loop, advanced hidden, hover help fixed, rollback archive preserved.",
+  "files": [
+    {
+      "path": "app.py",
+      "size": 115480,
+      "sha256": "f8a99ad876376511fea59b11527c455f73f00e8ee8c4800bbadf65862ac89d91"
+    },
+    {
+      "path": "updater.py",
+      "size": 9320,
+      "sha256": "7f9c8a42c453d4e73058ad7d0ff2bec5001b7e50c2a4798ebf25d6ce6b8f8f71"
+    },
+    {
+      "path": "ui/index.html",
+      "size": 32748,
+      "sha256": "e59cf6c652fdc8447c3bc7c912e796c83556b076868f3fd5ac457bdd53a16e60"
+    },
+    {
+      "path": "ui/ui.js",
+      "size": 68012,
+      "sha256": "c8761d1b291c4617eb36d6b949e239985396344b19ac70818a14885767412daa"
+    },
+    {
+      "path": "start-all.cmd",
+      "size": 993,
+      "sha256": "28acf349d54760daa799f0dbe42e3a2b31d3bc8de09c5ec9c4836a72752aa8aa"
+    },
+    {
+      "path": "start-studio.cmd",
+      "size": 281,
+      "sha256": "49ec19977fcc1a852cad7901e1911576e564078b0ce25760956c55146a56754c"
+    },
+    {
+      "path": "README_RU.md",
+      "size": 8205,
+      "sha256": "e230ca757cf188f123ea1ce6f03d2db91357604fef3a1e1d672dcd8f702a6f6f"
+    },
+    {
+      "path": "tests/test_app.py",
+      "size": 46276,
+      "sha256": "5e920d302d30a7570b59f6d00247deeabe93545c09dc5971a091c2290621b067"
+    },
+    {
+      "path": "tests/test_updater.py",
+      "size": 5128,
+      "sha256": "f919b57d1ccd779a0b9f40d4abac440802c5b1ee652629532328d4f1e9f45528"
+    }
+  ]
 }

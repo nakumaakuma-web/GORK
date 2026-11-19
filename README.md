@@ -11,3 +11,6 @@ Local image prompt reverse analysis and **separate time-oriented video analysis*
 **Important limitation:** temporal scanning is **not native video token inference**. The currently installed llama.cpp input uses groups of images. Pixel differences alone cannot identify actions. Native Conv3D / temporal M-RoPE handling would require a validated compatible runtime or separate video model. Video findings require verification against the original clip.
 
 See [README_RU.md](README_RU.md) for Russian instructions. Local UI: http://127.0.0.1:8765, Qwen server: http://127.0.0.1:8080.
+
+
+PES v0.9.0: Beginner motion brief -> local Qwen -> one FramePack F1 prompt, advanced preserved.

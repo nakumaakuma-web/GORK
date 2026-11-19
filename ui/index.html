@@ -50,7 +50,7 @@
 #videoControls .label{font-size:13px;font-weight:650}
 #sourceModes .chip{font-size:14px;padding:12px}
 
-/* v0.8.1: cursor-adjacent contextual help and removable uploaded source. */
+/* v0.9.0: cursor-adjacent contextual help and removable uploaded source. */
 #pesTooltip{position:fixed;left:0;top:0;z-index:9999;max-width:min(370px,calc(100vw - 20px));padding:11px 14px;
  background:#242c3a;color:#f4f6ff;border:1px solid #8295b5;border-radius:11px;
  box-shadow:0 9px 28px #0009;font:13px/1.5 'Segoe UI',Arial,sans-serif;pointer-events:none;
@@ -62,8 +62,28 @@
 #clearSource:hover{background:#933f56;border-color:#ffc2cf}
 #clearSource:focus-visible{outline:3px solid #d8b4eb;outline-offset:2px}
 @media(hover:none){#pesTooltip{display:none!important}}
+
+/* v0.9: beginner-friendly FramePack brief, advanced director remains available. */
+.quickDirector{margin-bottom:18px;border:1px solid #536078;background:#171c29;border-radius:14px;padding:18px}
+.quickDirector h3{margin:0 0 8px;font-size:19px}
+.quickDirector p{line-height:1.55}
+.quickModes{display:flex;gap:9px;margin:12px 0 16px;flex-wrap:wrap}
+.quickModes button{flex:1 1 180px}
+.quickOpts{display:grid;grid-template-columns:repeat(4,minmax(130px,1fr));gap:10px;align-items:end;margin:13px 0}
+.quickOpts .dirLabel{margin:0}
+.quickFoot{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:10px 0}
+.quickResultGrid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:12px 0}
+.quickResultGrid textarea{min-height:150px}
+.quickChoices{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+.quickChoices button{flex:1 1 200px;text-align:left;font-weight:500}
+.motionAdvanced{margin-top:16px;border:1px solid #41485b;border-radius:12px;background:#121722;padding:12px 16px}
+.motionAdvanced summary{cursor:pointer;font-weight:650;padding:8px 0;color:#e3d5f1}
+.motionAdvanced[open] .dirGrid{margin-top:16px}
+.quickDirector .btn.primary{background:#b486cb}
+@media(max-width:950px){.quickOpts{grid-template-columns:repeat(2,minmax(120px,1fr))}.quickResultGrid{grid-template-columns:1fr}}
+@media(max-width:500px){.quickOpts{grid-template-columns:1fr}}
 </style></head>
-<body><header><div><h1>Prompt <span>Extractor</span> Studio <small style="font-size:12px;vertical-align:middle;color:#8791a2"><span id="versionHeader">v0.8.1</span></small></h1><div class="sub">Изображения → промпты · Видео → действия, хронология, FramePack · Qwen3.5 · Локально</div></div><div class="status"><div class="dot" id="dot"></div><span id="modelStatus">Проверка Qwen…</span></div></header>
+<body><header><div><h1>Prompt <span>Extractor</span> Studio <small style="font-size:12px;vertical-align:middle;color:#8791a2"><span id="versionHeader">v0.9.0</span></small></h1><div class="sub">Изображения → промпты · Видео → действия, хронология, FramePack · Qwen3.5 · Локально</div></div><div class="status"><div class="dot" id="dot"></div><span id="modelStatus">Проверка Qwen…</span></div></header>
 <main><section class="card"><div class="pad"><h2>01 / Источник и режим</h2>
 <div class="field"><div class="label">Выбери тип анализа</div><div class="radio" id="sourceModes"><button id="modePhoto" type="button" class="chip active">🖼️ Изображение</button><button id="modeVideo" type="button" class="chip">🎬 Видео</button></div></div>
 <div id="videoControls" hidden>
@@ -78,7 +98,7 @@
 <div class="field" id="photoTarget"><div class="label">Назначение промпта</div><select id="target"><option value="CyberIllustrious Semi-Real V4 / Illustrious XL">CyberIllustrious V4 (изображения)</option><option value="FramePack F1 / HunyuanVideo">FramePack (видео)</option><option value="Универсальный генератор изображений">Универсальный промпт</option></select></div>
 <div class="field"><div id="frameStrip" class="frameStrip" style="display:none" aria-label="Подтверждённые временные точки видео"></div></div>
 <div class="field" style="padding:12px;border:1px solid #41485b;border-radius:10px">
-  <div class="label">Обновления программы <span id="studioVersion">v0.8.1</span></div>
+  <div class="label">Обновления программы <span id="studioVersion">v0.9.0</span></div>
   <div style="display:flex;gap:8px;flex-wrap:wrap"><button id="checkUpdate" class="btn secondary">Проверить обновления</button><button id="installUpdate" class="btn secondary" disabled>Установить обновление</button></div>
   <p class="muted" id="updateStatus" aria-live="polite">Источник обновлений пока не подключён. Qwen и FramePack не затрагиваются.</p>
 </div>
@@ -88,10 +108,36 @@
 <section class="card right"><div class="topbar"><h2>02 / Результаты</h2><div style="display:flex;gap:7px"><button id="exportTxt" class="btn secondary" disabled>Сохранить TXT</button><button id="exportJson" class="btn secondary" disabled>Сохранить JSON</button><button id="importJson" class="btn secondary">Открыть JSON</button><input id="importJsonFile" type="file" accept=".json,application/json" hidden/><button id="repairVideo" class="btn secondary" disabled>Восстановить FramePack / Хронологию</button></div></div><div id="statusline" class="statusline">Выбери исходный материал, затем нажми «Извлечь промпты».</div><div id="statusDetails" class="statusDetails" role="status" aria-live="off"><div id="statusPhase" class="statusPhase">Ожидание анализа</div><div id="statusExplanation" class="statusExplanation">Здесь будут подробности текущего этапа.</div><div class="statusTrack"><div id="statusFill" class="statusFill"></div></div><div class="statusMeta"><span>Ход работы Qwen · без выдуманного процента</span><span id="statusElapsed">00:00</span></div><div id="statusHistory" class="statusHistory"></div></div><div class="tabs" id="tabs"></div><div class="result" id="results"></div></section></main>
 <section class="director" id="motionDirector" aria-label="Режиссёр анимации">
   <div class="dirTitle"><div><h2>03 / Режиссёр видео · Anime / 2.5D / Realism</h2><p class="muted">Исходное изображение + последовательность действий → Motion Prompt RU/EN → локальный FramePack F1. Один непрерывный дубль, без смены внешности.</p></div><button class="btn secondary" id="motionFromAnalysis">Взять внешность из анализа</button></div>
+  <div class="quickDirector" id="quickDirector">
+    <h3>Закажи видео обычными словами</h3>
+    <p class="muted">Не нужно знать промпты: Qwen соберёт режиссёрскую последовательность и переведёт на английский. FramePack использует одну строку Prompt и отдельно загруженный начальный кадр.</p>
+    <div class="quickModes"><button type="button" id="quickFromText" class="chip active">✍️ Свой заказ</button><button type="button" id="quickFromVideo" class="chip">🎞️ Из анализа видео</button></div>
+    <label class="dirLabel" id="quickRequestLabel">Что должно происходить в видео? (по-русски)
+      <textarea id="quickRequest" class="dirInput" rows="4" placeholder="Например: девушка смотрит в окно, затем медленно поворачивается к камере и улыбается. Можно писать своими словами."></textarea>
+    </label>
+    <p class="muted" id="quickInputInfo">Если укажешь только внешность или обстановку, программа предложит варианты движения вместо выдумывания сюжета. Фото можно выбрать в разделе «Источник» выше.</p>
+    <div class="quickOpts">
+      <label class="dirLabel">Стиль<select id="quickStyle"><option value="auto" selected>Как на исходнике (авто)</option><option value="anime">Аниме / 2D</option><option value="semi">Полуреализм / 2.5D</option><option value="realistic">Реализм</option></select></label>
+      <label class="dirLabel">Длительность в FramePack<select id="quickDuration"><option value="5">5 сек · тест</option><option value="10" selected>10 сек · стандарт</option><option value="15">15 сек</option></select></label>
+      <label class="dirLabel">Камера<select id="quickCamera"><option value="locked" selected>Неподвижная</option><option value="push">Плавное приближение</option><option value="pan">Панорама</option><option value="follow">Сопровождение</option></select></label>
+      <label class="dirLabel">Темп<select id="quickPace"><option value="natural" selected>Естественный</option><option value="gentle">Медленный</option><option value="dynamic">Динамичный</option></select></label>
+    </div>
+    <div class="quickFoot"><label class="dirCheck"><input id="quickLoop" type="checkbox"/> Повтор / Loop</label><label class="dirCheck"><input id="quickAdult" type="checkbox"/> Сцена 18+ (совершеннолетние)</label><label id="quickAdultConfirmWrap" class="dirCheck" hidden><input id="quickAdultConfirm" type="checkbox"/> Подтверждаю 18+ всех участников</label></div>
+    <div class="dirActions"><button id="quickBuild" type="button" class="btn">🧠 Собрать промпт для FramePack</button></div>
+    <div id="quickStatus" class="dirStatus" role="status" aria-live="polite">Напиши обычными словами, что должно происходить, или выбери «Из анализа видео».</div>
+    <div id="quickSuggestions" hidden><strong>Какое действие выбрать?</strong><div id="quickChoices" class="quickChoices"></div></div>
+    <div class="quickResultGrid">
+      <label class="dirLabel">Русский вариант · проверь смысл<textarea id="quickOutputRu" class="dirInput" rows="6" placeholder="Здесь появится режиссёрское описание на русском."></textarea></label>
+      <label class="dirLabel">Единственный Prompt для FramePack · EN<textarea id="quickOutputEn" class="dirInput" rows="6" placeholder="Сюда Qwen соберёт один готовый английский промпт для вставки в FramePack."></textarea></label>
+    </div>
+    <div class="dirActions"><button id="quickCopy" type="button" class="btn secondary">📋 Скопировать Prompt EN</button><button id="quickCopyOpen" type="button" class="btn secondary">📋 Скопировать и открыть FramePack</button><button id="quickSave" type="button" class="btn secondary">Сохранить промпты TXT</button></div>
+    <p class="muted">Важно: 10 секунд выставляются в самом FramePack. Наша программа готовит текст для его единственного поля Prompt, но не управляет уже открытой вкладкой браузера. Автоматическая вставка в чужую вкладку браузером запрещена — используем копирование.</p>
+  </div>
+  <details class="motionAdvanced" id="motionAdvanced"><summary>⚙️ Дополнительные настройки и прямое подключение к FramePack (необязательно)</summary>
   <div class="dirGrid">
     <div class="card pad">
       <h2>Настройки сцены</h2>
-      <div class="dirRow"><label class="dirLabel">Визуальный стиль<select id="motionStyle"><option value="anime">Аниме / 2D</option><option value="semi" selected>Полуреализм / 2.5D</option><option value="realistic">Реализм / фото</option></select></label><label class="dirLabel">Длительность<select id="motionDuration"><option value="3">3 секунды</option><option value="5" selected>5 секунд</option><option value="8">8 секунд</option><option value="10">10 секунд</option><option value="15">15 секунд</option></select></label></div>
+      <div class="dirRow"><label class="dirLabel">Визуальный стиль<select id="motionStyle"><option value="anime">Аниме / 2D</option><option value="semi" selected>Полуреализм / 2.5D</option><option value="realistic">Реализм / фото</option></select></label><label class="dirLabel">Длительность<select id="motionDuration"><option value="3">3 секунды</option><option value="5">5 секунд</option><option value="8">8 секунд</option><option value="10" selected>10 секунд</option><option value="15">15 секунд</option></select></label></div>
       <div class="dirRow"><label class="dirLabel">Камера<select id="motionCamera"><option value="locked">Неподвижная</option><option value="push">Плавное приближение</option><option value="pan">Плавная панорама</option><option value="follow">Сопровождение персонажа</option></select></label><label class="dirLabel">Темп движения<select id="motionPace"><option value="gentle">Медленный</option><option value="natural" selected>Естественный</option><option value="dynamic">Динамичный</option></select></label></div>
       <label class="dirLabel">Внешность / канон персонажа (RU)<textarea id="motionIdentity" class="dirInput" rows="3" placeholder="Лицо, волосы, характерные детали и важные ограничения. Можно перенести из анализа."></textarea></label>
       <label class="dirLabel">Сцена и начальная поза (RU)<textarea id="motionScene" class="dirInput" rows="2" placeholder="Где стоит или сидит персонаж, что видно на исходном изображении."></textarea></label>
@@ -122,7 +168,7 @@
       <a id="motionRenderedDownload" href="#" download style="display:none">Сохранить готовое видео MP4</a>
       <p class="muted">Формат официального FramePack F1 проверяется перед отправкой. Если его API несовместимо, запуск будет отклонён без изменения моделей и настроек. Negative Prompt в официальном F1 скрыт и не используется.</p>
     </div>
-  </div>
+  </div></details>
 </section>
-<div class="foot">Prompt Extractor Studio · v0.8.1. Negative Prompt формируется заново; исходный авторский prompt из пикселей достоверно извлечь невозможно. Режиссёр анимации подготавливает Motion Prompt и может отправить запрос в локальный FramePack F1 после проверки API. Генерация на GPU не гарантируется.</div>
-<script src="/ui.js"></script><div id="pesTooltip" role="tooltip" hidden></div></body></html>
+<div class="foot">Prompt Extractor Studio · v0.9.0. Negative Prompt формируется заново; исходный авторский prompt из пикселей достоверно извлечь невозможно. Режиссёр анимации подготавливает Motion Prompt и может отправить запрос в локальный FramePack F1 после проверки API. Генерация на GPU не гарантируется.</div>
+<div id="pesTooltip" role="tooltip" hidden></div><script src="/ui.js"></script></body></html>

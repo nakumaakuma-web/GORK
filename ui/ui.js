@@ -49,7 +49,7 @@ function refreshSourceMode(){
   groups=isVideo?videoGroups.filter(([k])=>k!=='adult_context_ru'||getVideoMode()==='adult'):photoGroups;
   $('videoControls').hidden=!isVideo;
   $('photoTarget').hidden=isVideo;
-  $('motionDirector').hidden=!isVideo;
+  $('motionDirector').hidden=false; // FramePack brief is usable from a photo or an analyzed video.
   $('file').accept=isVideo?'video/*,.mp4,.webm,.mov,.mkv':'image/*,.png,.jpg,.jpeg,.webp';
   $('drop').querySelector('.empty strong').textContent=isVideo?'Выбрать видео':'Выбрать изображение';
   $('videoAdultNotice').hidden=!isVideo||getVideoMode()!=='adult';
@@ -399,7 +399,7 @@ setTimeout(checkUpdate,1200);
 
 
 // PES_MOTION_DIRECTOR_V070: build shot-by-shot RU/EN motion instructions and optionally render via local FramePack F1.
-let motionResult=null, motionLastDuration=5, motionRendering=false;
+let motionResult=null, motionLastDuration=10, motionRendering=false;
 function motionMessage(msg,type=''){
   const el=$('motionStatus');el.textContent=msg;el.className='dirStatus'+(type?' '+type:'');
 }
@@ -423,7 +423,7 @@ function motionBeatDefaults(duration){
   $('motionBeats').replaceChildren();const values=[0,.3,.7,1].map(x=>Number((x*duration).toFixed(1)));
   motionBeat(values[0],values[1],'');motionBeat(values[1],values[2],'');motionBeat(values[2],values[3],'');
 }
-motionBeatDefaults(5);
+motionBeatDefaults(10);
 $('motionDuration').onchange=()=>{
   const duration=Number($('motionDuration').value), old=motionLastDuration||5;
   for(const row of $('motionBeats').querySelectorAll('.dirBeat')){
@@ -621,7 +621,6 @@ const PES_FIELD_HELP = {
   exportJson:'Сохранить все разделы, временные наблюдения и служебные данные результата в JSON.',
   exportTxt:'Сохранить текстовые промпты и описания в TXT.',
   repairVideo:'Повторно запросить только недостающие Motion Prompt и хронологию, используя готовый анализ.',
-  motionDirector:'Режиссёр анимации: задаёт движения по времени и превращает указания в Motion Prompt для FramePack.',
   motionStyle:'Аниме, 2.5D или фотореализм. Выбранный стиль определяет требования к неизменности внешности.',
   motionDuration:'Продолжительность планируемой анимации. Этапы движения задаются внутри этого интервала.',
   motionCamera:'Как движется виртуальная камера: неподвижно, приближение, панорама или сопровождение.',
@@ -633,6 +632,38 @@ const PES_FIELD_HELP = {
   motionAdult:'Дополнительные настройки сцены только с совершеннолетними персонажами.',
   motionAdultConfirm:'Подтверждение, что все участники сцены совершеннолетние.',
   motionFromAnalysis:'Перенести внешность и исходную сцену из уже готового анализа.',
+  quickFromText:'Создание видео по простому русскому описанию. Необязательно знать правила FramePack: Qwen составит промпт.',
+  quickFromVideo:'Использовать уже готовый видеоотчёт из текущей сессии или открытого JSON. Не передавать неподтверждённые догадки как факты.',
+  quickRequest:'Опиши обычными словами, какие действия или движения нужны. Если напишешь только внешность — Qwen предложит варианты.',
+  quickStyle:'Авто сохраняет стиль исходного изображения; можно выбрать аниме, 2.5D или реализм.',
+  quickDuration:'Целевая длина: 5 секунд — тест, 10 — обычная сцена, 15 — длинная. Установи такую же длительность в FramePack.',
+  quickCamera:'Выбери неподвижную камеру или плавное перемещение. Это попадёт в один готовый Motion Prompt.',
+  quickPace:'Выбирает характер движений. Саму последовательность действий формирует Qwen.',
+  quickLoop:'Просит FramePack вернуть композицию ближе к начальной, чтобы ролик было легче зациклить. Бесшовность не гарантируется.',
+  quickAdult:'Категория видеосцены с совершеннолетними участниками. Не меняет исходное изображение автоматически.',
+  quickAdultConfirm:'Подтверждение, что все участники взрослые. Возраст нельзя надёжно установить по внешности.',
+  quickBuild:'Читает русский заказ или видеоотчёт, составляет движение, переводит на английский. На выходе один Prompt для FramePack.',
+  quickOutputRu:'Русское описание будущего движения. Проверь действия, порядок и соответствие твоему запросу.',
+  quickOutputEn:'Готовый английский промпт для единственного поля Prompt внутри FramePack. Текст можно отредактировать.',
+  quickCopy:'Копирует английский промпт в буфер обмена. Вставь его в поле Prompt FramePack через Ctrl+V.',
+  quickCopyOpen:'Копирует промпт и открывает локальную вкладку FramePack. Вставка в поле Prompt выполняется через Ctrl+V.',
+  quickSave:'Сохраняет русский и английский текст в TXT, чтобы не потерять заказ.',
+  motionBuild:'Старая подробная сборка промпта из временных этапов. Для простой работы используй кнопку выше.',
+  motionCopy:'Копировать готовый английский Motion Prompt из подробного режима.',
+  motionExport:'Сохранить подробный текст режиссёрского промпта.',
+  motionLoad:'Открыть ранее сохранённый JSON режиссёрского проекта.',
+  motionSave:'Сохранить редактируемый JSON режиссёрского проекта.',
+  motionSeed:'Число для воспроизводимости результатов генерации FramePack; одинаковый Seed не гарантирует идентичное видео.',
+  motionTeaCache:'Включить ускорение TeaCache, если FramePack его поддерживает. Возможны артефакты.',
+  motionFramepackUrl:'Локальный адрес открытого FramePack, обычно http://127.0.0.1:7860. Не вводи внешние сайты.',
+  motionFramepackProbe:'Проверяет, поддерживает ли локальный FramePack программный интерфейс. Генерацию не начинает.',
+  motionFramepackOpen:'Открывает локальную вкладку FramePack. Сам промпт не вставляет.',
+  motionRender:'Отправляет исходный кадр и английский промпт через API FramePack, если API совместимо.',
+  motionManualEn:'Введи собственный английский промпт, если не хочешь использовать Qwen.',
+  motionOutputEn:'Готовый английский Motion Prompt подробного режима. Можно отредактировать.',
+  motionOutputRu:'Перевод промпта на русский для проверки смысла.',
+  motionOutputTimeline:'Временные этапы движений подробного режима.',
+  motionDirector:'Создать анимацию по фотографии или разобранному видео; Qwen составит один готовый промпт FramePack.',
   checkUpdate:'Проверить доступную версию в GitHub. Проверка не устанавливает обновление.',
   installUpdate:'Установить доступное обновление с резервной копией. Не нажимай во время анализа.'
 };
@@ -681,3 +712,106 @@ document.addEventListener('focusin',e=>{
 document.addEventListener('focusout',pesHideHelp);
 document.addEventListener('keydown',e=>{if(e.key==='Escape')pesHideHelp();});
 window.addEventListener('scroll',pesHideHelp,true);
+
+
+// PES_SIMPLE_DIRECTOR_V090: one brief -> one FramePack Prompt; legacy advanced controls remain optional.
+let quickSource='description';
+let quickLatestResult=null;
+const QUICK_SOURCE_KEYS=['participants_ru','setting_ru','process_ru','interactions_ru','rhythm_ru','camera_ru','evidence_ru','timeline_ru','uncertainty_ru','adult_context_ru'];
+function quickNotice(text,kind=''){
+  const el=$('quickStatus');el.textContent=text;el.className='dirStatus'+(kind?' '+kind:'');
+}
+function quickSwitchSource(mode){
+  quickSource=mode;
+  $('quickFromText').classList.toggle('active',mode==='description');
+  $('quickFromVideo').classList.toggle('active',mode==='video_analysis');
+  $('quickRequestLabel').firstChild.textContent=(mode==='description'? 'Что должно происходить в видео? (по-русски)\n':'Дополнения к видеоанализу (необязательно)\n');
+  if(mode==='video_analysis'){
+    if(latest?.kind!=='video'||!latest.sections){
+      quickNotice('Сначала проанализируй видео или открой его готовый JSON. Нужны фактические наблюдения по процессу.','error');
+    }else{
+      if(latest?.video_mode==='adult'){ $('quickAdult').checked=true; $('quickAdultConfirmWrap').hidden=false; }
+      const sourceName=latest?.source_filename||'предыдущего анализа';
+      quickNotice('Видеоотчёт '+sourceName+' загружен. Он может содержать ошибки распознавания; сверь движения с оригиналом. Для режима 18+ подтверди возраст.', 'success');
+    }
+  } else quickNotice('Опиши действия своими словами. Изображение необязательно анализировать заранее — если оно загружено, Qwen получит его при сборке.');
+}
+$('quickFromText').onclick=()=>quickSwitchSource('description');
+$('quickFromVideo').onclick=()=>quickSwitchSource('video_analysis');
+$('quickAdult').onchange=()=>{$('quickAdultConfirmWrap').hidden=!$('quickAdult').checked;};
+function quickProjectSections(){
+  const src=latest?.sections||{};const out={};
+  for(const key of QUICK_SOURCE_KEYS){if(typeof src[key]==='string')out[key]=src[key].slice(0,2800);}
+  return out;
+}
+async function quickOrder(){
+  const data={source:quickSource,request_ru:$('quickRequest').value,
+    style:$('quickStyle').value,camera:$('quickCamera').value,
+    pace:$('quickPace').value,duration:Number($('quickDuration').value),
+    loop:$('quickLoop').checked,rating:$('quickAdult').checked?'adult':'standard',
+    adults_confirmed:$('quickAdultConfirm').checked,
+    video_sections:quickSource==='video_analysis'?quickProjectSections():{}};
+  if(quickSource==='description' && chosen && type==='photo'){
+    const f=await framesImage();data.image_data=f[0].data;
+  }
+  return data;
+}
+$('quickBuild').onclick=async()=>{
+  const btn=$('quickBuild');btn.disabled=true;
+  $('quickSuggestions').hidden=true;$('quickChoices').replaceChildren();
+  quickNotice('Qwen разбирает заказ, проверяет последовательность и готовит один английский Prompt для FramePack…');
+  try{
+    if(quickSource==='video_analysis'&&latest?.kind!=='video')throw Error('Сначала проанализируй видео или открой JSON видеоотчёта.');
+    if(quickSource==='video_analysis'&&chosen&&latest?.source_filename&&chosen.name!==latest.source_filename)throw Error('Текущий файл отличается от источника видеоотчёта ('+latest.source_filename+'). Удали другое вложение или открой правильный JSON.');
+    const data=await quickOrder();
+    const resp=await fetch('/api/motion/compose',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+    const out=await resp.json();if(!resp.ok)throw Error(out.error||'HTTP '+resp.status);
+    quickLatestResult=out;
+    if(out.status==='needs_action'){
+      $('quickOutputRu').value='';$('quickOutputEn').value='';
+      $('quickSuggestions').hidden=false;
+      (out.options_ru||[]).forEach(s=>{
+        const b=document.createElement('button');b.className='btn secondary';b.textContent=s;
+        b.dataset.help='Добавляет выбранное действие к заказу. После этого нажми «Собрать промпт». Не добавляет сюжет без твоего выбора.';
+        b.onclick=()=>{
+          $('quickRequest').value=($('quickRequest').value.trim()+'\n'+s).trim();
+          $('quickSuggestions').hidden=true;quickNotice('Действие добавлено. Нажми «Собрать промпт» ещё раз.');
+        };$('quickChoices').appendChild(b);
+      });
+      quickNotice('Пока описано только состояние, а не движение. Выбери вариант ниже или опиши действие своими словами.');
+      return;
+    }
+    $('quickOutputRu').value=out.motion_ru||'';$('quickOutputEn').value=out.motion_en||'';
+    quickNotice('Готово. Сверь русский смысл, скопируй английский Prompt и вставь его в FramePack. Длительность выставляется отдельно.', 'success');
+  }catch(err){quickNotice('Не удалось собрать промпт: '+err.message,'error');}
+  finally{btn.disabled=false;}
+};
+async function quickCopyText(){
+  const value=$('quickOutputEn').value.trim();
+  if(!value){quickNotice('Сначала собери английский Prompt для FramePack.','error');return false;}
+  try{await navigator.clipboard.writeText(value);quickNotice('Prompt EN скопирован. Вставь в FramePack клавишами Ctrl+V.','success');return true;}
+  catch{$('quickOutputEn').focus();$('quickOutputEn').select();quickNotice('Текст выделен. Нажми Ctrl+C, затем вставь в FramePack через Ctrl+V.');return false;}
+}
+$('quickCopy').onclick=quickCopyText;
+$('quickCopyOpen').onclick=async()=>{
+  const value=$('quickOutputEn').value.trim();if(!value){quickNotice('Сначала собери английский Prompt.','error');return;}
+  // Open synchronously to avoid popup blocker; local origin is validated by motionFPUrl().
+  let url;try{url=motionFPUrl();}catch(e){quickNotice('Проверь адрес FramePack в дополнительных настройках: '+e.message,'error');return;}
+  window.open(url,'_blank','noopener,noreferrer');
+  await quickCopyText();
+};
+$('quickSave').onclick=()=>{
+  const en=$('quickOutputEn').value,ru=$('quickOutputRu').value;
+  if(!en.trim()){quickNotice('Сначала собери или введи английский Prompt.','error');return;}
+  const out='=== MOTION RU ===\n'+ru+'\n\n=== FRAMEPACK PROMPT EN ===\n'+en+'\n\nДлительность: '+$('quickDuration').value+' сек (выставляется в FramePack)\nЦикл: '+($('quickLoop').checked?'да':'нет');
+  download('FramePack_prompt_'+$('quickDuration').value+'sec.txt',out,'text/plain;charset=utf-8');
+  quickNotice('Промпт на русском и английском сохранён в TXT.','success');
+};
+// Make every remaining interactive control discoverable; explicit help above takes priority.
+for(const el of document.querySelectorAll('button,select,textarea,input[type="checkbox"],input[type="number"]')){
+  if(el.dataset.help)continue;
+  const label=el.closest('.dirLabel,.dirCheck,.field');
+  if(label?.dataset.help){el.dataset.help=label.dataset.help;continue;}
+  const name=(label?.textContent||el.textContent||el.getAttribute('aria-label')||'элемент').replace(/\s+/g,' ').trim().slice(0,90);
+  if(name)el.dataset.help='Настройка «'+name+'». Можно изменить перед сборкой или запуском; это не начнёт генерацию само по себе.';
+}
