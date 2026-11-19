@@ -72,11 +72,11 @@ class Tests(unittest.TestCase):
             self.assertTrue(json.load(r)['ready'])
 
     def test_update_check_returns_status(self):
-        with patch.object(app.updater, 'check', return_value={'status':'up_to_date','current':'0.3.0','remote':'0.3.0'}):
+        with patch.object(app.updater, 'check', return_value={'status':'up_to_date','current':'0.4.0','remote':'0.4.0'}):
             with urllib.request.urlopen(self.url + '/api/update/check') as r:
                 state = json.load(r)
         self.assertEqual(state['status'], 'up_to_date')
-        self.assertEqual(state['current'], '0.3.0')
+        self.assertEqual(state['current'], '0.4.0')
 
     def test_update_requires_local_ui_origin(self):
         req = urllib.request.Request(self.url + '/api/update/install',
@@ -86,6 +86,7 @@ class Tests(unittest.TestCase):
         self.assertEqual(cm.exception.code, 403)
 
     def test_photo_pipeline(self):
+        self.mock.requests.clear()
         image='data:image/jpeg;base64,'+base64.b64encode(b'test-image').decode()
         body=json.dumps({'kind':'photo','depth':'fast','target':'CyberIllustrious V4','images':[{'time':'','data':image}]}).encode()
         req=urllib.request.Request(self.url+'/api/analyze',data=body,headers={'Content-Type':'application/json'})
@@ -94,10 +95,34 @@ class Tests(unittest.TestCase):
         events=[json.loads(x) for x in text.splitlines() if x.strip()]
         self.assertEqual(events[-1]['event'],'done')
         self.assertEqual(events[-1]['data']['sections']['positive_ru'], 'Value POSITIVE_RU')
-        self.assertEqual(events[-1]['data']['complete'], 12)
+        self.assertEqual(events[-1]['data']['complete'], len(app.FIELDS))
         self.assertEqual(len(self.mock.requests),2)
         self.assertEqual(self.mock.requests[0]['model'],'mock-qwen35')
         self.assertEqual(self.mock.requests[0]['messages'][1]['content'][1]['type'],'image_url')
+
+    def test_deep_photo_verifies_original_before_synthesis(self):
+        image='data:image/jpeg;base64,'+base64.b64encode(b'photo').decode()
+        self.mock.requests.clear()
+        body=json.dumps({'kind':'photo','depth':'deep','target':'CyberIllustrious V4','images':[{'time':'','data':image}]}).encode()
+        req=urllib.request.Request(self.url+'/api/analyze',data=body,headers={'Content-Type':'application/json'})
+        with urllib.request.urlopen(req,timeout=15) as r:
+            events=[json.loads(x) for x in r.read().decode().splitlines()]
+        self.assertEqual(events[-1]['event'],'done')
+        self.assertEqual(len(self.mock.requests),5)
+        self.assertIn('ВТОРИЧНУЮ ВИЗУАЛЬНУ ПРОВЕРКУ',self.mock.requests[3]['messages'][1]['content'][0]['text'])
+        self.assertEqual(self.mock.requests[3]['messages'][1]['content'][1]['type'],'image_url')
+        self.assertTrue(events[-1]['data']['verified_analysis'])
+        self.assertIn('quality_ru',events[-1]['data']['sections'])
+
+    def test_detect_opposite_sides_ru_en(self):
+        fields={'positive_ru':'Татуировка на левой стороне груди, правая рука поднята',
+                'positive_en':'Tattoo on the right chest, right arm raised'}
+        issues=app.audit_sections(fields,'photo')
+        self.assertTrue(any('chest' in x for x in issues))
+        self.assertFalse(any('arm (RU:' in x for x in issues))
+
+    def test_quality_report_does_not_claim_certainty(self):
+        self.assertIn('не гарантия',app.format_quality(['Тест'], 'deep', True))
 
     def test_video_pipeline(self):
         image='data:image/jpeg;base64,'+base64.b64encode(b'test-image').decode()
@@ -106,7 +131,7 @@ class Tests(unittest.TestCase):
         req=urllib.request.Request(self.url+'/api/analyze',data=body,headers={'Content-Type':'application/json'})
         with urllib.request.urlopen(req,timeout=10) as r:
             events=[json.loads(x) for x in r.read().decode().splitlines()]
-        self.assertEqual(events[-1]['data']['complete'],12)
+        self.assertEqual(events[-1]['data']['complete'],len(app.FIELDS))
         self.assertEqual(events[-1]['data']['kind'],'video')
 
     def test_reject_non_image(self):

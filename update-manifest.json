@@ -1,27 +1,27 @@
 {
   "application": "prompt-extractor-studio",
-  "version": "0.3.0",
-  "notes": "Подключён репозиторий GORK как канал обновлений. Модели, фото и промпты не затрагиваются.",
+  "version": "0.4.0",
+  "notes": "v0.4: отдельный анатомический блок, повторная визуальная сверка фото, диагностика ошибок RU/EN. Сохраняет Qwen и результаты.",
   "files": [
     {
       "path": "app.py",
-      "size": 21954,
-      "sha256": "c53292fbc67330ba7a0053a24d4572aa02bd8f4547b41c8fc22d97f6bdf7174b"
+      "size": 31828,
+      "sha256": "73229ca46eb838a57dcffbe8c8e7b349bb239cff1ae45c94917b7dd8b44a032e"
     },
     {
       "path": "updater.py",
       "size": 8713,
-      "sha256": "77f458d64c6df340413212f6a62ecd02400b9f34e72e7ac848a6c839278efdeb"
+      "sha256": "fc44ea44090b8a4bb1f35f25c71c1b12617e8126c506aaeece62ae456ba2e3d3"
     },
     {
       "path": "ui/index.html",
-      "size": 8575,
-      "sha256": "cbe0b4c80188923b12c2abe31dc7351debb46d520038ffbfd85a7223ca5d62ac"
+      "size": 8577,
+      "sha256": "8d15505b96f5fb542bdb4372476be53180613d990682c193d73cfb6de9057d69"
     },
     {
       "path": "ui/ui.js",
-      "size": 11254,
-      "sha256": "fd0784a03b5dbdecb39c50d7a4b8098c3f683acfeb597213579f6c9afb988aea"
+      "size": 11557,
+      "sha256": "53aa786bca503a9b6d1c471f197879b5236e2f058c5dc0642da53e392dbf6c4d"
     },
     {
       "path": "start-all.cmd",
@@ -35,18 +35,18 @@
     },
     {
       "path": "README_RU.md",
-      "size": 3584,
-      "sha256": "0fd37454296c489a8f57b673a3b2165434318502af12d82164867d25d55483be"
+      "size": 4967,
+      "sha256": "3d1215a84cf81bc9c6e1095ac273f268edd0d3a2d3ed6d1fcae241a4aefe5125"
     },
     {
       "path": "tests/test_app.py",
-      "size": 5472,
-      "sha256": "2b00e3e1167afb9c9e811c83ffa7eba899415e7abcfe94a173a19432f7fecaa6"
+      "size": 7151,
+      "sha256": "2caec42e89a4215bad25442ca504548dcd63d1486d71fe6e0492aa6704c585e2"
     },
     {
       "path": "tests/test_updater.py",
       "size": 4027,
-      "sha256": "077c194ce7517d28d45975ea0ad161c6927ead5337f519dc9f9fc4ba96e36123"
+      "sha256": "13d71d7800d747d8e9ffe89741f7dd7f29b80420c75ff19691a56d3e14170e9a"
     }
   ]
 }

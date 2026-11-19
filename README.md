@@ -7,4 +7,6 @@ Local reverse prompting for still images and sampled video frames with an existi
 - This repository is an update channel for **Prompt Extractor Studio only**.
 - User approval is required to install each update in the app; upgrades verify SHA-256 checksums and keep backups.
 
-**Current version:** v0.3.0. See [README_RU.md](README_RU.md) for setup, updater linking and limitations.
+**Current version:** v0.4.0. See [README_RU.md](README_RU.md) for setup, updater linking and limitations.
+
+**v0.4:** deep photo mode rechecks original image; separate anatomy, pose and diagnostic consistency flags.

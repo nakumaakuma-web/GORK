@@ -4,9 +4,9 @@ let chosen=null, type=null, objectURL=null, depth='fast', latest=null, active='p
 const groups=[
   ['positive_ru','Positive RU'], ['positive_en','Positive EN'],
   ['negative_ru','Negative RU'], ['negative_en','Negative EN'],
-  ['appearance_ru','Внешность'], ['pose_ru','Поза / анатомия'],
+  ['appearance_ru','Внешность'], ['anatomy_ru','Анатомия'], ['pose_ru','Поза'],
   ['clothing_ru','Одежда'], ['style_ru','Стиль / свет'],
-  ['uncertainty_ru','Неопределённости'], ['framepack_ru','FramePack RU'],
+  ['uncertainty_ru','Неопределённости'], ['quality_ru','Проверка качества'], ['framepack_ru','FramePack RU'],
   ['framepack_en','FramePack EN'], ['timeline_ru','Хронология']
 ];
 function status(s, danger=false){ $('statusline').textContent=s; $('statusline').style.color=danger?'#f09d99':'#d6bbdf'; }
@@ -76,8 +76,8 @@ async function streamAnalysis(payload){
       const msg=JSON.parse(line);if(msg.event==='stage')status(msg.message);
       if(msg.event==='error')throw Error(msg.message);
       if(msg.event==='done'){latest=msg.data;active='positive_ru';render();$('exportTxt').disabled=false;$('exportJson').disabled=false;
-        const n=latest.complete;status('Анализ завершён. Заполнено разделов: '+n+'/'+latest.total+'. Проверь детали перед генерацией.',n<9);
-        if(n<8){active='positive_ru';render(); status('Модель вернула неполный результат: '+n+'/'+latest.total+'. Исходный ответ сохранён в JSON. Проверь лимиты генерации.',true);}
+        const n=latest.complete; const issues=(latest.quality_flags||[]).filter(s=>!s.startsWith('Формальные проверки')); status('Анализ завершён: '+n+'/'+latest.total+' разделов. '+(issues.length?'Замечания: '+issues.length+'. Открой «Проверка качества».':'Сверь результат с оригиналом.'),n<latest.total||issues.length>0);
+        if(n<latest.total-4){active='positive_ru';render(); status('Модель вернула неполный результат: '+n+'/'+latest.total+'. Исходный ответ сохранён в JSON. Проверь лимиты генерации.',true);}
       }
     }
   }
