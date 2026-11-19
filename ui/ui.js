@@ -1,15 +1,74 @@
 'use strict';
 const $ = (id) => document.getElementById(id);
-let chosen=null, type=null, objectURL=null, depth='fast', latest=null, active='positive_ru';
+let chosen=null, type=null, objectURL=null, depth='fast', latest=null, active='positive_ru', currentJob=null;
 const groups=[
   ['positive_ru','Positive RU'], ['positive_en','Positive EN'],
   ['negative_ru','Negative RU'], ['negative_en','Negative EN'],
   ['appearance_ru','Внешность'], ['anatomy_ru','Анатомия'], ['pose_ru','Поза'],
   ['clothing_ru','Одежда'], ['style_ru','Стиль / свет'],
-  ['uncertainty_ru','Неопределённости'], ['quality_ru','Проверка качества'], ['framepack_ru','FramePack RU'],
+  ['uncertainty_ru','Неопределённости'], ['visual_passport','Визуальный паспорт JSON'], ['quality_ru','Проверка качества'], ['framepack_ru','FramePack RU'],
   ['framepack_en','FramePack EN'], ['timeline_ru','Хронология']
 ];
 function status(s, danger=false){ $('statusline').textContent=s; $('statusline').style.color=danger?'#f09d99':'#d6bbdf'; }
+// PES_STATUS_V051: UI tracks stage notifications and elapsed time, not model tokens.
+const stageTracker = { running:false, startedAt:0, startedStepAt:0, step:0, last:'', history:[], timer:null };
+function stageDuration(seconds){
+  const n=Math.max(0,Math.floor(seconds));
+  return String(Math.floor(n/60)).padStart(2,'0')+':'+String(n%60).padStart(2,'0');
+}
+function stageTimerUpdate(){
+  if(!stageTracker.running)return;
+  const now=Date.now();
+  $('statusElapsed').textContent='Прошло: '+stageDuration((now-stageTracker.startedAt)/1000)
+    +' · текущий этап: '+stageDuration((now-stageTracker.startedStepAt)/1000);
+}
+function stageDescribe(message){
+  const m=message.match(/Анализ кадров\s+(\d+)\s*[–-]\s*(\d+)\s+из\s+(\d+)/i);
+  if(m)return 'Qwen анализирует выбранные кадры '+m[1]+'–'+m[2]+' из '+m[3]+'. Ответ появится после завершения прохода.';
+  const extract=message.match(/Извлечение кадров:\s*(\d+)\/(\d+)/i);
+  if(extract)return 'Браузер извлекает кадр '+extract[1]+' из '+extract[2]+' из видео. Генерация промптов ещё не началась.';
+  if(/визуальн.*сверк|проверка.*оригинал/i.test(message))return 'Qwen повторно сравнивает описание с изображением и уточняет детали.';
+  if(/сборка.*промпт|формирование.*промпт/i.test(message))return 'Qwen собирает Positive / Negative на русском и английском.';
+  if(/исправление языка|сверка перевод/i.test(message))return 'Проверяется язык и согласованность промптов RU / EN.';
+  if(/подробный анализ|внешность|анатомия|поз[аыуе]|стиль|визуальный паспорт/i.test(message))return 'Qwen уточняет детали внешности, геометрии позы и сцены.';
+  if(/проверка подключения/i.test(message))return 'Проверяется доступность локального сервера Qwen.';
+  if(/отправка данных/i.test(message))return 'Исходные данные передаются локальному серверу 127.0.0.1:8080.';
+  return 'Выполняется текущий этап. Модель возвращает результат после окончания запроса.';
+}
+function stageBegin(){
+  stageTracker.running=true;
+  stageTracker.startedAt=Date.now();stageTracker.startedStepAt=stageTracker.startedAt;
+  stageTracker.step=0;stageTracker.last='';stageTracker.history=[];
+  const panel=$('statusDetails');panel.classList.remove('done','error');panel.classList.add('running');
+  $('statusHistory').textContent='';
+  $('statusPhase').textContent='Подготовка к анализу';
+  $('statusExplanation').textContent='Сначала приложение извлечёт кадры, затем отправит их локальной Qwen.';
+  if(stageTracker.timer)clearInterval(stageTracker.timer);
+  stageTracker.timer=setInterval(stageTimerUpdate,1000);
+  stageTimerUpdate();
+}
+function stageUpdate(message){
+  if(!stageTracker.running || !message)return;
+  if(stageTracker.last===message)return;
+  stageTracker.last=message;
+  stageTracker.step+=1;stageTracker.startedStepAt=Date.now();
+  const clock=new Date().toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  stageTracker.history.push(clock+' · '+message);
+  $('statusHistory').textContent=stageTracker.history.slice(-5).join('\n');
+  $('statusPhase').textContent='Этап '+stageTracker.step+' · '+message;
+  $('statusExplanation').textContent=stageDescribe(message);
+  stageTimerUpdate();
+}
+function stageEnd(failed=false, cancelled=false){
+  if(!stageTracker.running)return;
+  stageTracker.running=false;
+  if(stageTracker.timer){clearInterval(stageTracker.timer);stageTracker.timer=null;}
+  const panel=$('statusDetails');panel.classList.remove('running');panel.classList.add(failed?'error':'done');
+  $('statusPhase').textContent=cancelled?'Анализ остановлен':failed?'Ошибка анализа':'Анализ завершён';
+  $('statusExplanation').textContent=cancelled?'Оставлены доступные промежуточные результаты.':failed?'Подробности ошибки — в строке состояния выше.':'Результаты доступны во вкладках и для экспорта.';
+  $('statusElapsed').textContent='Общее время: '+stageDuration((Date.now()-stageTracker.startedAt)/1000);
+}
+
 function render(){
   $('tabs').innerHTML='';$('results').innerHTML='';
   groups.forEach(([key,label])=>{
@@ -18,7 +77,8 @@ function render(){
     const head=document.createElement('div');head.className='editorhead';
     const title=document.createElement('strong');title.textContent=label;
     const copy=document.createElement('button');copy.className='btn secondary';copy.textContent='Копировать';
-    const editor=document.createElement('textarea');editor.className='editor big';editor.placeholder='После анализа здесь появится текст';editor.value=latest?.sections?.[key]||'';editor.oninput=()=>{if(latest)latest.sections[key]=editor.value;};
+    const editor=document.createElement('textarea');editor.className='editor big';editor.placeholder='После анализа здесь появится текст';editor.value=key==='visual_passport' ? (latest?.visual_passport?JSON.stringify(latest.visual_passport,null,2):'') : (latest?.sections?.[key]||'');
+    editor.oninput=()=>{if(!latest)return;if(key==='visual_passport'){try{latest.visual_passport=JSON.parse(editor.value);}catch{} }else{latest.sections[key]=editor.value;}};
     copy.onclick=async()=>{try{await navigator.clipboard.writeText(editor.value);copy.textContent='Скопировано';setTimeout(()=>copy.textContent='Копировать',1200);}catch{editor.select();document.execCommand('copy');}};
     head.append(title,copy);panel.append(head,editor);$('results').appendChild(panel);
   });
@@ -58,39 +118,65 @@ async function framesVideo(){
       });
       await pause(40);
       out.push({time:sec.toFixed(2),data:canvasData(vid,vid.videoWidth,vid.videoHeight,depth==='deep'?1200:980)});
-      status('Извлечение кадров: '+(n+1)+'/'+count+'…');
+      status('Извлечение кадров: '+(n+1)+'/'+count+'…');stageUpdate('Извлечение кадров: '+(n+1)+'/'+count+'…');
     }
     return out;
   }finally{vid.removeAttribute('src');vid.load();}
 }
 function download(name,body,mime){const blob=new Blob([body],{type:mime});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),2000);}
 function base(){return (chosen?.name||'prompt').replace(/\.[^.]*$/,'').replace(/[^a-zA-Zа-яА-Я0-9_-]/g,'_').slice(0,60)+'_prompts';}
+$('saveDraft').onclick=()=>{if($('partialPreview').textContent)download(base()+'_draft.txt',$('partialPreview').textContent,'text/plain;charset=utf-8');};
 $('exportJson').onclick=()=>{if(latest)download(base()+'.json',JSON.stringify({...latest,source_filename:chosen?.name},null,2),'application/json;charset=utf-8');};
-$('exportTxt').onclick=()=>{if(latest)download(base()+'.txt',groups.map(([key,label])=>'=== '+label+' ===\n'+(latest.sections[key]||'')).join('\n\n'),'text/plain;charset=utf-8');};
+$('exportTxt').onclick=()=>{if(latest)download(base()+'.txt',groups.map(([key,label])=>'=== '+label+' ===\n'+(key==='visual_passport'?JSON.stringify(latest.visual_passport||{},null,2):(latest.sections[key]||''))).join('\n\n'),'text/plain;charset=utf-8');};
 async function streamAnalysis(payload){
   const resp=await fetch('/api/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
   if(!resp.ok)throw Error('Ошибка приложения HTTP '+resp.status+': '+(await resp.text()).slice(0,400));
   const reader=resp.body.getReader(), decoder=new TextDecoder();let remain='',done=false;
   while(!done){const piece=await reader.read();done=piece.done;remain+=decoder.decode(piece.value||new Uint8Array(),{stream:!done});let idx;
     while((idx=remain.indexOf('\n'))!==-1){const line=remain.slice(0,idx);remain=remain.slice(idx+1);if(!line.trim())continue;
-      const msg=JSON.parse(line);if(msg.event==='stage')status(msg.message);
+      const msg=JSON.parse(line);if(msg.event==='stage'){status(msg.message);stageUpdate(msg.message);}
+      if(msg.event==='partial'){
+        $('partialBox').style.display='block';
+        const el=$('partialPreview');
+        el.textContent += '\n=== '+msg.stage+' ===\n'+msg.text+'\n';
+        el.scrollTop=el.scrollHeight;
+        $('saveDraft').disabled=false;
+      }
+      if(msg.event==='cancelled'){stageEnd(false,true);status(msg.message||'Анализ остановлен. Промежуточные записи доступны в блоке черновиков.',true);return;}
       if(msg.event==='error')throw Error(msg.message);
-      if(msg.event==='done'){latest=msg.data;active='positive_ru';render();$('exportTxt').disabled=false;$('exportJson').disabled=false;
-        const n=latest.complete; const issues=(latest.quality_flags||[]).filter(s=>!s.startsWith('Формальные проверки')); status('Анализ завершён: '+n+'/'+latest.total+' разделов. '+(issues.length?'Замечания: '+issues.length+'. Открой «Проверка качества».':'Сверь результат с оригиналом.'),n<latest.total||issues.length>0);
+      if(msg.event==='done'){
+        stageEnd(false);latest=msg.data;active='positive_ru';render();$('exportTxt').disabled=false;$('exportJson').disabled=false;
+        const cachedNote=latest.cache_hit?' Из кэша без повторной генерации.':'';
+        const n=latest.complete; const issues=(latest.quality_flags||[]).filter(s=>!s.startsWith('Формальные проверки')); status('Анализ завершён: '+n+'/'+latest.total+' разделов.'+cachedNote+' '+(issues.length?'Замечания: '+issues.length+'. Открой «Проверка качества».':'Сверь результат с оригиналом.'),n<latest.total||issues.length>0);
         if(n<latest.total-4){active='positive_ru';render(); status('Модель вернула неполный результат: '+n+'/'+latest.total+'. Исходный ответ сохранён в JSON. Проверь лимиты генерации.',true);}
       }
     }
   }
 }
 $('run').onclick=async()=>{
-  if(!chosen)return;const b=$('run');b.disabled=true;b.textContent='Анализ выполняется…';
+  if(!chosen)return;stageBegin();const b=$('run');b.disabled=true;b.textContent='Анализ выполняется…';
+  currentJob=(crypto.randomUUID ? crypto.randomUUID().replace(/-/g,'') : Array.from(crypto.getRandomValues(new Uint8Array(16)), x=>x.toString(16).padStart(2,'0')).join(''));
+  $('stop').disabled=false;$('partialBox').style.display='none';$('partialPreview').textContent='';$('saveDraft').disabled=true;
   try{status('Подготовка исходника…');const images=type==='video'?await framesVideo():await framesImage();status('Отправка данных в локальную Qwen…');
-    await streamAnalysis({kind:type,depth,target:$('target').value,images});
-  }catch(err){status('Ошибка: '+err.message,true);}
-  finally{b.disabled=false;b.textContent='Извлечь промпты';}
+    await streamAnalysis({kind:type,depth,target:$('target').value,job_id:currentJob,images});
+  }catch(err){stageEnd(true);status('Ошибка: '+err.message,true);}
+  finally{b.disabled=false;b.textContent='Извлечь промпты';$('stop').disabled=true;currentJob=null;}
+};
+$('stop').onclick=async()=>{
+  if(!currentJob)return;
+  const id=currentJob;
+  $('stop').disabled=true;
+  status('Остановка запрошена. Qwen завершит текущий проход, затем дальнейшие запросы прекратятся.');
+  try{
+    await fetch('/api/analyze/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({job_id:id})});
+  }catch(err){status('Не удалось запросить остановку: '+err.message,true);}
 };
 async function ping(){try{const r=await fetch('/health',{cache:'no-store'});const h=await r.json();$('dot').classList.toggle('ok',!!h.ready);$('modelStatus').textContent='Qwen3.5: '+h.status;}catch{$('dot').classList.remove('ok');$('modelStatus').textContent='Нет связи с локальным приложением';}}
 render();ping();setInterval(ping,12000);
+fetch('/api/version',{cache:'no-store'}).then(r=>r.json()).then(x=>{
+  $('versionHeader').textContent='v'+x.version;
+  $('studioVersion').textContent='v'+x.version;
+}).catch(()=>{});
 
 // Manual, opt-in self-update. No update is downloaded or installed on page load.
 let remoteAvailable = false;
@@ -114,7 +200,8 @@ async function checkUpdate(){
 $('checkUpdate').onclick=checkUpdate;
 $('installUpdate').onclick=async()=>{
   if(!remoteAvailable)return;
-  if(!$('run').disabled && !confirm('Программа перезапустится после обновления. Убедись, что результаты анализа сохранены. Продолжить?'))return;
+  if(currentJob){$('updateStatus').textContent='Дождись завершения анализа или останови его, прежде чем обновлять программу.';return;}
+  if(!confirm('Программа перезапустится после обновления. Убедись, что результаты анализа сохранены. Продолжить?'))return;
   $('installUpdate').disabled=true;$('updateStatus').textContent='Скачивание, проверка SHA-256 и установка…';
   try{
     const response=await fetch('/api/update/install',{

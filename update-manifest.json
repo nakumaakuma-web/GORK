@@ -1,27 +1,27 @@
 {
   "application": "prompt-extractor-studio",
-  "version": "0.4.1",
-  "notes": "v0.4.1: Positive/Negative RU/EN автоматически проверяются на правильный язык; неверные поля переводятся отдельным запросом. Сохраняет Qwen и результаты.",
+  "version": "0.5.1",
+  "notes": "v0.5.1: крупная строка состояния, реальные этапы анализа кадров, время текущего запроса и журнал этапов. Также включает улучшения v0.5. Без изменения моделей и результатов.",
   "files": [
     {
       "path": "app.py",
-      "size": 35829,
-      "sha256": "fe19d16aeb9437145b1386aa2509545f51160b15d33b7e0eac7c713951191f87"
+      "size": 46722,
+      "sha256": "47fe6490f6c4e377322af1d7f6a7b5a0e2656f0e434dce61cbce4158fe1308e6"
     },
     {
       "path": "updater.py",
       "size": 8713,
-      "sha256": "fc44ea44090b8a4bb1f35f25c71c1b12617e8126c506aaeece62ae456ba2e3d3"
+      "sha256": "569f1d847bb71433b2012a76e2c615d9623aad9854e4d2d33743d463bd0f576e"
     },
     {
       "path": "ui/index.html",
-      "size": 8583,
-      "sha256": "5ce63afb59789ea67584cf1a84ea7d838dfb072bfc7895f7b5ea86700041e1ad"
+      "size": 11348,
+      "sha256": "9a2dc9f10722e8f5f32c6d8bd294adaceac2e2809053d794e1e44fb1fd2156f7"
     },
     {
       "path": "ui/ui.js",
-      "size": 11557,
-      "sha256": "53aa786bca503a9b6d1c471f197879b5236e2f058c5dc0642da53e392dbf6c4d"
+      "size": 18882,
+      "sha256": "7e063689334eec51feeb1ec9989f97c4c8d68b0cae48fc29f9f666b27670eee7"
     },
     {
       "path": "start-all.cmd",
@@ -35,18 +35,18 @@
     },
     {
       "path": "README_RU.md",
-      "size": 5752,
-      "sha256": "cac69c458f8980a9506a42d8095be0ff7ed8be34d9f3a8f29f1a92a37afb14a5"
+      "size": 9165,
+      "sha256": "72df481dfcc7955db4a43fcb6b8435e12e310411e9868834d295176e1cf1dcae"
     },
     {
       "path": "tests/test_app.py",
-      "size": 9672,
-      "sha256": "a4d27d836bc27b0072525f49450311cf69c77dbb42bb0067d787701b6737ab76"
+      "size": 17853,
+      "sha256": "13e0797323118c1a59b2f7b804ab64d4d04404e9444c9b278910fd9269a9e149"
     },
     {
       "path": "tests/test_updater.py",
-      "size": 4027,
-      "sha256": "13d71d7800d747d8e9ffe89741f7dd7f29b80420c75ff19691a56d3e14170e9a"
+      "size": 4703,
+      "sha256": "3a104df79414a1c4b2aa108fcbc47ae1c608e27e241cdcc7e20ccf93a9bfe056"
     }
   ]
 }

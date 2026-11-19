@@ -1,4 +1,6 @@
 import base64
+import uuid
+import time
 import json
 import os
 import sys
@@ -65,6 +67,29 @@ class Tests(unittest.TestCase):
         self.assertEqual(parsed['positive_ru'], 'А')
         self.assertEqual(parsed['positive_en'], 'B')
 
+    def test_status_panel_live_elements(self):
+        html=(Path(__file__).resolve().parents[1]/'ui'/'index.html').read_text(encoding='utf-8')
+        for element in ('statusDetails','statusPhase','statusExplanation','statusFill','statusElapsed','statusHistory'):
+            self.assertIn('id="'+element+'"', html)
+        self.assertIn('min-height:62px',html)
+        self.assertIn('font-size:17px',html)
+        self.assertIn('pesStatusMove',html)
+
+    def test_status_panel_uses_real_stage_events(self):
+        source=(Path(__file__).resolve().parents[1]/'ui'/'ui.js').read_text(encoding='utf-8')
+        self.assertIn("if(msg.event==='stage'){status(msg.message);stageUpdate(msg.message);}",source)
+        self.assertIn('stageEnd(false,true)',source)
+        self.assertIn('stageEnd(false);latest=msg.data',source)
+        self.assertIn('stageEnd(true)',source)
+        self.assertIn('stageTracker.startedStepAt',source)
+        self.assertIn('Ответ появится после завершения прохода',source)
+
+    def test_version_matches_updater(self):
+        with urllib.request.urlopen(self.url + '/api/version') as response:
+            version = json.load(response)['version']
+        self.assertEqual(version, app.updater.VERSION)
+        self.assertEqual(version, '0.5.1')
+
     def test_home_health(self):
         with urllib.request.urlopen(self.url) as r:
             self.assertIn('Prompt Extractor', r.read().decode())
@@ -85,6 +110,17 @@ class Tests(unittest.TestCase):
             urllib.request.urlopen(req, timeout=3)
         self.assertEqual(cm.exception.code, 403)
 
+    def test_update_rejects_while_qwen_running(self):
+        app._gpu_job_lock.acquire()
+        try:
+            req=urllib.request.Request(self.url+'/api/update/install',data=b'{}',
+                    headers={'Content-Type':'application/json','Origin':self.url}, method='POST')
+            with self.assertRaises(urllib.error.HTTPError) as cm:
+                urllib.request.urlopen(req,timeout=3)
+            self.assertEqual(cm.exception.code,409)
+        finally:
+            app._gpu_job_lock.release()
+
     def test_photo_pipeline(self):
         self.mock.requests.clear()
         image='data:image/jpeg;base64,'+base64.b64encode(b'test-image').decode()
@@ -99,6 +135,80 @@ class Tests(unittest.TestCase):
         self.assertEqual(len(self.mock.requests),2)
         self.assertEqual(self.mock.requests[0]['model'],'mock-qwen35')
         self.assertEqual(self.mock.requests[0]['messages'][1]['content'][1]['type'],'image_url')
+
+    def test_memory_cache_avoids_repeat_qwen_requests(self):
+        img='data:image/jpeg;base64,'+base64.b64encode(b'cache-case-05').decode()
+        payload={'kind':'photo','depth':'fast','target':'Universal','images':[{'time':'','data':img}]}
+        self.mock.requests.clear()
+        out=[]
+        for _ in range(2):
+            data=json.dumps(payload).encode()
+            req=urllib.request.Request(self.url+'/api/analyze',data=data,headers={'Content-Type':'application/json'})
+            with urllib.request.urlopen(req,timeout=12) as r:
+                out.append([json.loads(x) for x in r.read().decode().splitlines() if x.strip()])
+        self.assertEqual(len(self.mock.requests),2) # analyze + synthesis on FIRST request only
+        self.assertEqual(out[-1][-1]['event'],'done')
+        self.assertTrue(out[-1][-1]['data']['cache_hit'])
+        self.assertTrue(any(x['event']=='partial' for x in out[0]))
+
+    def test_standard_photo_mode_three_calls(self):
+        self.mock.requests.clear()
+        img='data:image/jpeg;base64,'+base64.b64encode(b'standard-mode-photo').decode()
+        data=json.dumps({'kind':'photo','depth':'standard','target':'Universal',
+                         'images':[{'time':'','data':img}]}).encode()
+        req=urllib.request.Request(self.url+'/api/analyze',data=data,headers={'Content-Type':'application/json'})
+        with urllib.request.urlopen(req,timeout=12) as r:
+            events=[json.loads(x) for x in r.read().decode().splitlines() if x.strip()]
+        self.assertEqual(events[-1]['event'],'done')
+        self.assertEqual(len(self.mock.requests),3)
+        self.assertEqual(sum(x['event']=='partial' for x in events),2)
+
+    def test_cancel_waits_until_current_model_call_ends(self):
+        start=threading.Event()
+        release=threading.Event()
+        calls=[]
+        returned=[]
+        job=uuid.uuid4().hex
+        image='data:image/jpeg;base64,'+base64.b64encode(b'cancel-test-'+job.encode()).decode()
+        data=json.dumps({'kind':'photo','depth':'deep','job_id':job,'target':'Universal',
+                        'images':[{'time':'','data':image}]}).encode()
+        def fake_model(*args, **kwargs):
+            calls.append(True)
+            start.set()
+            if not release.wait(5):
+                raise RuntimeError('Timed out in test')
+            return 'Текст визуального анализа.'
+        def run():
+            req=urllib.request.Request(self.url+'/api/analyze',data=data,
+                                       headers={'Content-Type':'application/json'})
+            with urllib.request.urlopen(req,timeout=10) as resp:
+                returned.extend(json.loads(x) for x in resp.read().decode().splitlines() if x.strip())
+        with patch.object(app,'_llama_request',side_effect=fake_model):
+            task=threading.Thread(target=run)
+            task.start()
+            try:
+                self.assertTrue(start.wait(3))
+                payload=json.dumps({'job_id':job}).encode()
+                cancel=urllib.request.Request(self.url+'/api/analyze/cancel',data=payload,
+                        headers={'Content-Type':'application/json','Origin':self.url})
+                with urllib.request.urlopen(cancel,timeout=3) as resp:
+                    outcome=json.load(resp)
+                self.assertTrue(outcome['cancel_requested'])
+            finally:
+                release.set()
+                task.join(timeout=5)
+        self.assertFalse(task.is_alive())
+        self.assertEqual(len(calls),1)
+        self.assertTrue(any(x['event']=='cancelled' for x in returned))
+        self.assertFalse(any(x['event']=='done' for x in returned))
+
+    def test_cancel_requires_ui_origin(self):
+        cancel=urllib.request.Request(self.url+'/api/analyze/cancel',
+                 data=json.dumps({'job_id':uuid.uuid4().hex}).encode(),
+                 headers={'Content-Type':'application/json'})
+        with self.assertRaises(urllib.error.HTTPError) as err:
+            urllib.request.urlopen(cancel,timeout=3)
+        self.assertEqual(err.exception.code,403)
 
     def test_deep_photo_verifies_original_before_synthesis(self):
         image='data:image/jpeg;base64,'+base64.b64encode(b'photo').decode()
@@ -152,6 +262,38 @@ class Tests(unittest.TestCase):
         issues=app.audit_sections(fields,'photo')
         self.assertTrue(any('chest' in x for x in issues))
         self.assertFalse(any('arm (RU:' in x for x in issues))
+
+    def test_cross_language_sides_selective_repair(self):
+        fields={'positive_ru':'Женщина с татуировкой на левой стороне груди. Правая рука поднята.',
+                'positive_en':'Woman with a tattoo on the right chest. Right arm raised.',
+                'negative_ru':'Искажённые пальцы.',
+                'negative_en':'Distorted fingers.'}
+        self.assertTrue(any('chest' in item for item in app._pair_conflicts(fields['positive_ru'],fields['positive_en'])))
+        with patch.object(app,'_llama_request',return_value='Woman with a tattoo on the left chest. Right arm raised.') as fake:
+            notes=app.ensure_pair_consistency(fields)
+        self.assertEqual(fake.call_count,1)
+        self.assertIn('left chest',fields['positive_en'])
+        self.assertFalse(app._pair_conflicts(fields['positive_ru'],fields['positive_en']))
+        self.assertTrue(any('исправлено' in n for n in notes))
+
+    def test_cross_language_failed_repair_keeps_old_english(self):
+        fields={'positive_ru':'Татуировка на левой стороне груди.',
+                'positive_en':'Tattoo on the right chest.'}
+        with patch.object(app,'_llama_request',return_value='Tattoo on the right chest.') as fake:
+            notes=app.ensure_pair_consistency(fields)
+        self.assertEqual(fields['positive_en'],'Tattoo on the right chest.')
+        self.assertTrue(notes)
+        self.assertEqual(fake.call_count,1)
+
+    def test_json_visual_passport_from_final_fields(self):
+        passport=app.make_visual_passport({'appearance_ru':'Рыжие волосы',
+                   'anatomy_ru':'Длинные руки', 'pose_ru':'Поворот корпуса',
+                   'positive_ru':'Татуировка на левой руке.',
+                   'uncertainty_ru':'Сторона зеркальна'},'photo')
+        self.assertEqual(passport['source_kind'],'photo')
+        self.assertEqual(passport['appearance'],'Рыжие волосы')
+        self.assertEqual(passport['side_mentions_from_positive_ru']['arm'],['left'])
+        self.assertEqual(passport['uncertainties'],'Сторона зеркальна')
 
     def test_quality_report_does_not_claim_certainty(self):
         self.assertIn('не гарантия',app.format_quality(['Тест'], 'deep', True))

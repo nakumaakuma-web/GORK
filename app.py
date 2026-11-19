@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import argparse
 import functools
+import hashlib
 import json
 import os
 import signal
 import re
 import socket
 import threading
+import uuid
 import time
 import urllib.error
 import urllib.parse
@@ -22,6 +24,41 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 LLAMA = os.getenv('PES_LLAMA_URL', 'http://127.0.0.1:8080').rstrip('/')
 LIMIT_BYTES = 42 * 1024 * 1024
+# Cache is RAM-only: images, prompts and private descriptions are not written to disk.
+CACHE_LIMIT = 5
+_analysis_cache = {}
+_cache_lock = threading.Lock()
+_gpu_job_lock = threading.Lock()
+_jobs_lock = threading.Lock()
+_jobs = {}
+
+
+def _cache_key(kind: str, depth: str, target: str, images: list[dict]) -> str:
+    h = hashlib.sha256()
+    for part in (updater.VERSION, kind, depth, target):
+        h.update(part.encode('utf-8'))
+        h.update(b'\x00')
+    for im in images:
+        h.update(str(im.get('time', '')).encode('utf-8'))
+        h.update(b'\x00')
+        h.update(im['data'].encode('ascii'))
+        h.update(b'\x00')
+    return h.hexdigest()
+
+
+def _cache_get(key: str):
+    with _cache_lock:
+        return _analysis_cache.get(key)
+
+
+def _cache_put(key: str, value: dict):
+    with _cache_lock:
+        if key in _analysis_cache:
+            _analysis_cache.pop(key)
+        _analysis_cache[key] = value
+        while len(_analysis_cache) > CACHE_LIMIT:
+            _analysis_cache.pop(next(iter(_analysis_cache)))
+
 ANALYSIS_TOKENS = 2350
 FINAL_TOKENS = 3900
 LANGUAGE_RETRY_TOKENS = 2600
@@ -255,7 +292,7 @@ def prompt_language_matches(text: str, expected: str) -> bool:
     raise ValueError('Invalid language expected: ' + expected)
 
 
-def ensure_prompt_languages(sections: dict, notify=None) -> list[str]:
+def ensure_prompt_languages(sections: dict, notify=None, check_cancel=None) -> list[str]:
     """Repair mislabeled RU/EN outputs in isolated, one-language requests.
 
     Fail closed: if the retry is wrong, clear the field instead of silently
@@ -264,6 +301,8 @@ def ensure_prompt_languages(sections: dict, notify=None) -> list[str]:
     """
     notices: list[str] = []
     for field in ('positive_ru', 'positive_en', 'negative_ru', 'negative_en'):
+        if check_cancel:
+            check_cancel()
         original = (sections.get(field) or '').strip()
         if not original:
             continue
@@ -294,6 +333,8 @@ def ensure_prompt_languages(sections: dict, notify=None) -> list[str]:
             sections[field] = ''
             notices.append(f'{field.upper()}: исправление языка не удалось ({type(exc).__name__}).')
             continue
+        if check_cancel:
+            check_cancel()
         if prompt_language_matches(repaired, lang):
             sections[field] = repaired
             notices.append(f'{field.upper()}: язык исправлен отдельным запросом к Qwen.')
@@ -301,6 +342,84 @@ def ensure_prompt_languages(sections: dict, notify=None) -> list[str]:
             sections[field] = ''
             notices.append(f'{field.upper()}: модель повторно выдала неверный язык; поле очищено, чтобы не вводить в заблуждение.')
     return notices
+
+
+def _pair_conflicts(ru: str, en: str) -> list[str]:
+    """Conservative, rule-based comparison; never guesses ground truth."""
+    issues = []
+    rs, es = _sides(ru, 'ru'), _sides(en, 'en')
+    for part in sorted(rs.keys() & es.keys()):
+        if rs[part] != es[part]:
+            issues.append('left/right for ' + part)
+    if bool(re.search(r'\b(?:сетчат|сетк[аеуи])', ru, re.I)) != bool(re.search(r'\bfishnet\b', en, re.I)):
+        issues.append('fishnet vs sheer material')
+    # Example of the observed model error: мягкий свет translated as soft focus.
+    if re.search(r'мягк\w*\s+(?:свет|освещени)', ru, re.I) and re.search(r'soft focus', en, re.I) and not re.search(r'soft\s+light|softly\s+lit', en, re.I):
+        issues.append('soft lighting vs soft focus')
+    return issues
+
+
+def ensure_pair_consistency(sections: dict, notify=None, check_cancel=None) -> list[str]:
+    """Only retry English when a concrete RU/EN contradiction is detected.
+
+    RU is the *textual* source of truth for translation, not verified pixel truth.
+    Keep the original and report failure rather than silently changing anatomy.
+    """
+    notices = []
+    for kind in ('positive', 'negative'):
+        if check_cancel:
+            check_cancel()
+        ru = sections.get(kind + '_ru', '').strip()
+        en = sections.get(kind + '_en', '').strip()
+        if not ru or not en:
+            continue
+        mismatches = _pair_conflicts(ru, en)
+        if not mismatches:
+            continue
+        if notify:
+            notify('stage', message=f'Сверка переводов {kind.upper()}: ' + ', '.join(mismatches))
+        guide = ('You translate image generation prompts. Answer ONLY in English, without commentary. '
+                 'Translate all details and all negations exactly from Russian. Preserve left/right directions, '
+                 'textures, camera parameters and anatomy. Do not invent or omit characteristics.')
+        try:
+            candidate = _llama_request('Translate this Russian prompt precisely into English, using the Russian '
+                                       'text as the sole source of truth:\n\n' + ru, [], LANGUAGE_RETRY_TOKENS,
+                                       system_message=guide).strip()
+            if check_cancel:
+                check_cancel()
+            if prompt_language_matches(candidate, 'en') and not _pair_conflicts(ru, candidate):
+                sections[kind + '_en'] = candidate
+                notices.append(kind.upper() + '_EN: выявленное расхождение перевода исправлено по русскому тексту; требуется визуальная проверка.')
+            else:
+                notices.append(kind.upper() + '_EN: автоматическое исправление не подтвердило согласованность, оставлен исходный текст.')
+        except InterruptedError:
+            raise
+        except Exception as exc:
+            notices.append(kind.upper() + '_EN: проверка перевода завершилась ошибкой ' + type(exc).__name__ + '.')
+    return notices
+
+
+def make_visual_passport(sections: dict, source_kind: str) -> dict:
+    """Machine-readable evidence index generated without extra Qwen inference.
+
+    Descriptions remain hypotheses until confirmed against the image.
+    """
+    rus = sections.get('positive_ru', '')
+    detected = _sides(rus, 'ru')
+    return {
+        'schema_version': '0.1',
+        'source_kind': source_kind,
+        'fact_status': 'model_observations_require_visual_review',
+        'appearance': sections.get('appearance_ru', ''),
+        'anatomy': sections.get('anatomy_ru', ''),
+        'pose': sections.get('pose_ru', ''),
+        'clothing_and_accessories': sections.get('clothing_ru', ''),
+        'camera_lighting_style': sections.get('style_ru', ''),
+        'uncertainties': sections.get('uncertainty_ru', ''),
+        'side_mentions_from_positive_ru': {part: sorted(directions) for part, directions in detected.items()},
+        'languages': {'ru': 'positive_ru', 'en': 'positive_en'},
+        'warning': 'Стороны и детали получены из текста модели, а не доказаны независимой компьютерной геометрией.'
+    }
 
 
 def audit_sections(sections: dict, kind: str) -> list[str]:
@@ -349,7 +468,7 @@ def validate_images(images):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'PromptExtractorStudio/0.4.1'
+    server_version = 'PromptExtractorStudio/' + updater.VERSION
 
     def log_message(self, fmt, *args):
         print('[PES] ' + fmt % args)
@@ -381,6 +500,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._reply(200, json.dumps(result, ensure_ascii=False).encode())
             except updater.UpdateError as exc:
                 return self._reply(200, json.dumps({'status': 'error', 'message': str(exc), 'current': updater.VERSION}, ensure_ascii=False).encode())
+        if path == '/api/version':
+            return self._reply(200, json.dumps({'version': updater.VERSION}, ensure_ascii=False).encode())
         if path == '/health':
             healthy = False
             status = 'недоступна'
@@ -398,12 +519,35 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urllib.parse.urlsplit(self.path).path
+        if path == '/api/analyze/cancel':
+            origin = self.headers.get('Origin', '')
+            allowed_origins = {'http://127.0.0.1:%s' % self.server.server_address[1],
+                               'http://localhost:%s' % self.server.server_address[1]}
+            if origin not in allowed_origins or self.headers.get('Content-Type', '').split(';')[0].strip() != 'application/json':
+                return self._reply(403, b'{"error":"Local UI origin and JSON required"}')
+            try:
+                length = int(self.headers.get('Content-Length', '0'))
+                if not 0 < length < 2000:
+                    raise ValueError('Некорректное тело запроса.')
+                job_id = json.loads(self.rfile.read(length))['job_id']
+                if not isinstance(job_id, str) or not re.fullmatch(r'[0-9a-f]{32}', job_id):
+                    raise ValueError('Некорректный идентификатор задачи.')
+            except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+                return self._reply(400, json.dumps({'error': str(exc)}, ensure_ascii=False).encode())
+            with _jobs_lock:
+                event = _jobs.get(job_id)
+                if event is not None:
+                    event.set()
+            return self._reply(200, json.dumps({'cancel_requested': event is not None,
+                                                'message': 'Остановка после текущего запроса к Qwen'}).encode())
         if path == '/api/update/install':
             origin = self.headers.get('Origin', '')
             allowed_origins = {'http://127.0.0.1:%s' % self.server.server_address[1],
                                'http://localhost:%s' % self.server.server_address[1]}
             if origin not in allowed_origins or self.headers.get('Content-Type', '').split(';')[0].strip() != 'application/json':
                 return self._reply(403, b'{"error":"Local UI origin and JSON required"}')
+            if _gpu_job_lock.locked():
+                return self._reply(409, json.dumps({'error':'Сначала завершите текущий анализ Qwen. Обновление запрещено во время обработки.'}, ensure_ascii=False).encode())
             try:
                 outcome = updater.install(ROOT)
                 payload = json.dumps(outcome, ensure_ascii=False).encode()
@@ -427,11 +571,24 @@ class Handler(BaseHTTPRequestHandler):
             if kind not in ('photo', 'video'):
                 raise ValueError('Неизвестный тип исходника.')
             depth = data.get('depth', 'fast')
-            if depth not in ('fast', 'deep'):
+            if depth not in ('fast', 'standard', 'deep'):
                 raise ValueError('Неизвестный режим.')
             target = str(data.get('target', 'Общий генератор'))[:100]
+            job_id = data.get('job_id') or uuid.uuid4().hex
+            if not isinstance(job_id, str) or not re.fullmatch(r'[0-9a-f]{32}', job_id):
+                raise ValueError('Некорректный ID задачи.')
         except (ValueError, TypeError, KeyError) as exc:
             return self._reply(400, json.dumps({'error': str(exc)}, ensure_ascii=False).encode())
+
+        # Avoid concurrent 35B invocations on 8 GB VRAM.
+        key = _cache_key(kind, depth, target, images)
+        cached = _cache_get(key)
+        if cached is None and not _gpu_job_lock.acquire(blocking=False):
+            return self._reply(429, json.dumps({'error': 'Qwen уже обрабатывает другое изображение.'}, ensure_ascii=False).encode())
+        cancelled = threading.Event()
+        if cached is None:
+            with _jobs_lock:
+                _jobs[job_id] = cancelled
 
         # NDJSON streaming allows the UI to show the current stage.
         self.send_response(200)
@@ -445,28 +602,57 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 self.wfile.write(line)
                 self.wfile.flush()
-            except (BrokenPipeError, ConnectionResetError):
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                cancelled.set()
                 return
 
+        def check_cancel():
+            if cancelled.is_set():
+                raise InterruptedError('Остановлено по запросу пользователя после текущего прохода.')
+
         try:
+            if cached is not None:
+                notify('stage', message='Повторный результат из оперативной памяти — без нового запуска Qwen.')
+                notify('done', data={**cached, 'cache_hit': True})
+                return
             notify('stage', message='Проверка подключения Qwen…')
             # No web tools and no external API: only localhost.
             observations = []
             if kind == 'photo':
                 if depth == 'fast':
                     notify('stage', message='Анализ фотографии…')
-                    observations.append(_llama_request(PHOTO_FAST, images[:1], ANALYSIS_TOKENS))
+                    text_part = _llama_request(PHOTO_FAST, images[:1], ANALYSIS_TOKENS)
+                    check_cancel()
+                    observations.append(text_part)
+                    notify('partial', stage='Общий анализ', text=text_part)
+                elif depth == 'standard':
+                    notify('stage', message='Основной визуальный паспорт…')
+                    text_part = _llama_request(PHOTO_FAST, images[:1], ANALYSIS_TOKENS)
+                    check_cancel()
+                    observations.append(text_part)
+                    notify('partial', stage='Основной анализ', text=text_part)
+                    notify('stage', message='Уточнение позы, анатомии и сторон тела…')
+                    text_part = _llama_request(PHOTO_FOCUS['geometry'], images[:1], ANALYSIS_TOKENS)
+                    check_cancel()
+                    observations.append('Уточнение позы и одежды:\n' + text_part)
+                    notify('partial', stage='Поза и одежда', text=text_part)
                 else:
                     for label, focus in [('Внешность', 'appearance'), ('Поза и одежда', 'geometry'), ('Стиль и окружение', 'style')]:
                         notify('stage', message='Подробный анализ: ' + label)
-                        observations.append(f'{label}:\n' + _llama_request(PHOTO_FOCUS[focus], images[:1], ANALYSIS_TOKENS))
+                        text_part = _llama_request(PHOTO_FOCUS[focus], images[:1], ANALYSIS_TOKENS)
+                        check_cancel()
+                        observations.append(f'{label}:\n' + text_part)
+                        notify('partial', stage=label, text=text_part)
             else:
                 # Split temporal sequence into small batches for a 16k context window.
                 step = 3 if depth == 'deep' else 4
                 for start in range(0, len(images), step):
                     batch = images[start:start + step]
                     notify('stage', message=f'Анализ кадров {start + 1}–{start + len(batch)} из {len(images)}…')
-                    observations.append(_llama_request(VIDEO_FOCUS, batch, ANALYSIS_TOKENS))
+                    text_part = _llama_request(VIDEO_FOCUS, batch, ANALYSIS_TOKENS)
+                    check_cancel()
+                    observations.append(text_part)
+                    notify('partial', stage=f'Кадры {start + 1}–{start + len(batch)}', text=text_part)
 
             observations_text = '\n\n'.join(observations)
             if len(observations_text) > 18000:
@@ -478,23 +664,38 @@ class Handler(BaseHTTPRequestHandler):
             if kind == 'photo' and depth == 'deep':
                 notify('stage', message='Визуальная сверка по оригиналу: стороны тела, поза, детали…')
                 reviewed = _llama_request(PHOTO_VERIFY.format(observations=observations_text), images[:1], VERIFY_TOKENS)
+                check_cancel()
                 analysis = reviewed
+                notify('partial', stage='Проверка исходной фотографии', text=reviewed)
             notify('stage', message='Сборка позитивных и негативных промптов RU/EN…')
             completed = _llama_request(SYNTH.format(kind=kind, target=target, analysis=analysis), [], FINAL_TOKENS)
+            check_cancel()
             sections = parse_sections(completed)
-            language_notes = ensure_prompt_languages(sections, notify)
+            language_notes = ensure_prompt_languages(sections, notify, check_cancel)
+            language_notes += ensure_pair_consistency(sections, notify, check_cancel)
+            check_cancel()
             flags = language_notes + audit_sections(sections, kind)
             # Quality is informational, not a guarantee of correctness.
             sections['quality_ru'] = format_quality(flags, depth, reviewed=bool(reviewed))
-            notify('done', data={
+            result = {
                 'kind': kind, 'depth': depth, 'target': target, 'sections': sections,
+                'visual_passport': make_visual_passport(sections, kind),
                 'raw': completed, 'source_analysis': observations_text,
                 'verified_analysis': reviewed, 'quality_flags': flags,
                 'complete': sum(bool(sections[k.lower()]) for k in FIELDS), 'total': len(FIELDS),
                 'note': 'Промпты реконструированы; негативный промпт составлен, а не извлечён из файла. Качество требует визуальной проверки.'
-            })
+            }
+            _cache_put(key, result)
+            notify('done', data=result)
+        except InterruptedError as exc:
+            notify('cancelled', message=str(exc))
         except Exception as exc:
             notify('error', message=str(exc))
+        finally:
+            if cached is None:
+                with _jobs_lock:
+                    _jobs.pop(job_id, None)
+                _gpu_job_lock.release()
 
 
 def main():
