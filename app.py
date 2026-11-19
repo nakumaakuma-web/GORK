@@ -33,9 +33,9 @@ _jobs_lock = threading.Lock()
 _jobs = {}
 
 
-def _cache_key(kind: str, depth: str, target: str, images: list[dict], sampling_mode: str = 'uniform') -> str:
+def _cache_key(kind: str, depth: str, target: str, images: list[dict], sampling_mode: str = 'uniform', video_mode: str = 'legacy', trace_digest: str = '') -> str:
     h = hashlib.sha256()
-    for part in (updater.VERSION, kind, depth, target, sampling_mode):
+    for part in (updater.VERSION, kind, depth, target, sampling_mode, video_mode, trace_digest):
         h.update(part.encode('utf-8'))
         h.update(b'\x00')
     for im in images:
@@ -61,7 +61,7 @@ def _cache_put(key: str, value: dict):
 
 ANALYSIS_TOKENS = 2350
 FINAL_TOKENS = 3900
-VIDEO_REPAIR_TOKENS = 2300
+VIDEO_REPAIR_TOKENS = 3400
 LANGUAGE_RETRY_TOKENS = 2600
 VERIFY_TOKENS = 2500
 FIELDS = [
@@ -127,6 +127,90 @@ VIDEO_FOCUS = ANALYSIS_COMMON + """
 После всех кадров: «УСТОЙЧИВАЯ ВНЕШНОСТЬ», «ПОДТВЕРЖДЁННЫЕ ИЗМЕНЕНИЯ», «ВОЗМОЖНЫЙ МОНТАЖ», «НЕИЗВЕСТНО МЕЖДУ КАДРАМИ».
 Не смешивай персонажей и не выдавай разницу кадров за непрерывное наблюдение. Описывай только видимое, техническим русским языком.
 """
+
+# VIDEO_REPORT_V080: a video-only analytical vocabulary, never photo fields.
+VIDEO_REPORT_FIELDS = (
+    'participants_ru','setting_ru','process_ru','interactions_ru',
+    'rhythm_ru','camera_ru','evidence_ru','adult_context_ru','uncertainty_ru'
+)
+VIDEO_REPORT_TOKENS = 3300
+
+VIDEO_OBSERVATION = """Ты анализируешь ПОСЛЕДОВАТЕЛЬНЫЕ МОМЕНТЫ ВИДЕО, а не отдельные фотографии.
+Тебе предоставлен небольшой отрезок последовательности, изображения идут по возрастающим временным меткам.
+В каждом отрезке различай: кто участвует и остаётся тем же человеком; окружение; что меняется в контактах, руках, голове, корпусе, положении предметов; последовательность видимых состояний; смену ракурса/монтаж.
+ОТДЕЛЬНО запиши динамику между соседними ДОСТУПНЫМИ наблюдениями (изменения видимых положений), не придумывая траекторию, действия или частоту в пропущенных интервалах.
+Не пиши фото-промпты, размеры анатомии по кадру или стилистическую оценку фотографии.
+Если повторение видно в нескольких последовательных наблюдениях, укажи временные опоры, но не называй интервал циклом без подтверждения.
+Каждая заметная смена/взаимодействие: метка → наблюдение → подтверждение соседними кадрами → что не видно.
+Числовая активность ниже основана на изменении пикселей: это не классификатор действий, секса или движения камеры.
+Пиши факты нейтрально по-русски. Не угадывай совершеннолетие из внешности.
+"""
+VIDEO_OBSERVATION_ADULT = """
+РЕЖИМ 18+: пользователь указал, что видео содержит контент для взрослых. Не игнорируй этот контекст.
+Приоритет — распознавание объективно ВИДИМЫХ взаимодействий и контактов, изменений положения участников и предметов, очередности, повторяемости и длительности. Различай обнажение, интимную сцену и подтверждённое действие; не называй действие без визуального доказательства.
+Описывай интимные контакты сухо и аналитически, без эротического повествования, вымышленных ощущений, физиологии или невидимых деталей. Сомнения отражай явно. Не делай выводов о возрасте или согласии по внешности.
+"""
+VIDEO_REPORT = """Составь ТОЛЬКО ФАКТИЧЕСКИЙ ОТЧЁТ о ВИДЕО по наблюдениям во времени. Не используй фото-промпты.
+Режим: {mode}. Источник: последовательные временные окна, включая зарегистрированные изменения изображения.
+Цифровой ряд изменения кадра (не доказательство конкретного действия): {trace}.
+Не делай ложных утверждений о движениях между непроверенными временными точками, эмоциях, согласии, возрасте или монтажных переходах.
+Отличай подтверждённый повтор действия от неоднозначной похожей позы. В каждой части укажи временные опоры, где они известны.
+Если режим 18+: удели приоритет объективным видимым интимным взаимодействиям, последовательности контактов, изменению поз, ритму и непрерывности, но избегай художественного описания и догадок.
+Заполни эти самостоятельные разделы на русском. Заголовки точно как ниже, содержимое после них:
+===PARTICIPANTS_RU===
+Кто участвует и отличительные устойчивые признаки, с разграничением персонажей.
+===SETTING_RU===
+Помещение, предметы, освещение — только по видимым моментам.
+===PROCESS_RU===
+Фактическое развитие действия, начало, существенные изменения и конец, с временными опорами.
+===INTERACTIONS_RU===
+Взаимодействия участников и предметов; возникновение, прекращение контактов, то, что нельзя увидеть.
+===RHYTHM_RU===
+Наблюдаемые повторы, изменение темпа; если период не доказан — так и скажи.
+===CAMERA_RU===
+Подвижность камеры, возможные склейки, ракурс, освещение, зоны видимости.
+===EVIDENCE_RU===
+Ключевые доказательства по времени и явные ограничения наблюдения.
+===ADULT_CONTEXT_RU===
+При 18+ — что действительно делает сцену взрослой, нейтральная категория наблюдаемого взаимодействия, сомнения. Иначе: «Режим 18+ не выбран».
+===UNCERTAINTY_RU===
+Что не удалось увидеть, промежуточные интервалы, неоднозначные контакты.
+
+ВРЕМЕННЫЕ НАБЛЮДЕНИЯ:
+{analysis}
+"""
+
+
+def validate_video_trace(trace: list | None) -> list[dict]:
+    """Quantized frame-difference evidence; never passed off as semantic motion recognition."""
+    if trace is None: return []
+    if not isinstance(trace,list) or len(trace)>120:
+        raise ValueError('Нужна корректная временная карта до 120 отсчётов.')
+    checked=[];last=-1.
+    for row in trace:
+        if not isinstance(row,dict): raise ValueError('Неверная запись временной карты.')
+        try:t=float(row['time']);s=float(row['change'])
+        except (KeyError,ValueError,TypeError): raise ValueError('Неверная метка или показатель активности.')
+        if not (0<=t<=86400 and 0<=s<=255 and t>last and t==t and s==s):
+            raise ValueError('Некорректная последовательность временных показателей.')
+        last=t;checked.append({'time':round(t,3),'change':round(s,2)})
+    return checked
+
+
+def temporal_evidence_text(trace: list[dict], limit=120) -> str:
+    if not trace:return 'Нет временных измерений: проверяй только изображения с метками.'
+    rows=trace[:limit]
+    return '; '.join(f"{p['time']:.2f}с: изменение пикселей {p['change']:.1f}/255" for p in rows)
+
+
+def parse_video_sections(raw: str) -> dict:
+    keys=[x.upper() for x in VIDEO_REPORT_FIELDS]
+    match=re.compile(r'^\s*={3}\s*('+ '|'.join(map(re.escape,keys))+r')\s*={3}\s*$',re.I|re.M)
+    pieces=list(match.finditer(raw));output={p:'' for p in VIDEO_REPORT_FIELDS}
+    for index,m in enumerate(pieces):
+        end=pieces[index+1].start() if index+1<len(pieces) else len(raw)
+        output[m.group(1).lower()]=raw[m.end():end].strip()
+    return output
 
 SYNTH = """Ты редактор структурированных промптов. Источник — только нижеприведённый визуальный паспорт.
 Приоритет фактов: если есть раздел «ПОДТВЕРЖДЁННЫЙ ВИЗУАЛЬНЫЙ ПАСПОРТ», используй ТОЛЬКО его, а из «ИСКЛЮЧИТЬ» ничего не переносить.
@@ -264,9 +348,9 @@ VIDEO_REPAIR_PROMPT = """Составь ТОЛЬКО три самостояте
 Отличай СЛОЖНУЮ СЦЕНУ (интерпретация) от увиденного факта; даже при различии поз между кадрами неизвестна точная траектория.
 Сначала мысленно сопоставь наблюдения каждой известной временной метке, затем выдай строго три заголовка:
 ===FRAMEPACK_RU===
-Только русский язык. Связный короткий motion prompt: персонаж, устойчивые детали внешности, наблюдаемые изменения между кадрами, выразительность, план, композиция. Если движение камеры не доказано, рекомендуй неподвижную камеру как вариант генерации, не приписывая её ролику. Без фантазий о невидимом.
+Только русский язык. Связный короткий motion prompt: подтвержденная последовательность видимых действий и контактов, порядок изменения положения участников, устойчивые детали персонажей, окружение, композиция. Если движение камеры не доказано, рекомендуй неподвижную камеру как вариант генерации, не приписывая её ролику. Без фантазий о невидимом.
 ===FRAMEPACK_EN===
-English only. A concise ready-to-use FramePack motion prompt with the same confirmed details, continuity cues and no assumed off-screen motion. Never translate an uncertain camera cut as a camera pan.
+English only. A concise ready-to-use FramePack prompt describing only the confirmed order of visible actions, physical interactions and changes, with continuity cues and no assumed off-screen motion. Never translate an uncertain camera cut as a camera pan.
 ===TIMELINE_RU===
 РУССКИЙ ЯЗЫК. ДЛЯ КАЖДОЙ ВЫШЕУКАЗАННОЙ МЕТКИ выдай отдельную строку вида «0.50 с — видимая поза; ракурс; различимые отличия от предыдущего кадра».
 Используй точные времена из списка, включая первую и последнюю метку; не выдумывай дополнительные временные точки. Если анализа для метки нет, напиши «недостаточно данных», а не дорисовывай событие.
@@ -590,9 +674,10 @@ def format_quality(flags: list[str], depth: str, reviewed: bool = False) -> str:
     return lead + 'Это не гарантия точности.\n\n' + '\n'.join(f'{i}. {x}' for i, x in enumerate(flags, 1))
 
 
-def validate_images(images):
-    if not isinstance(images, list) or not 1 <= len(images) <= 8:
-        raise ValueError('Нужно от 1 до 8 изображений/кадров.')
+def validate_images(images, kind='photo'):
+    max_count=24 if kind=='video' else 8
+    if not isinstance(images, list) or not 1 <= len(images) <= max_count:
+        raise ValueError(f'Нужно от 1 до {max_count} изображений/кадров.')
     for frame in images:
         if not isinstance(frame, dict):
             raise ValueError('Некорректные данные кадра.')
@@ -1080,7 +1165,7 @@ class Handler(BaseHTTPRequestHandler):
                 sections = {k: str(v)[:30000] for k,v in data['sections'].items()
                             if isinstance(k, str) and k in {n.lower() for n in FIELDS} and isinstance(v, str)}
                 times = data.get('frame_times', [])
-                if not isinstance(times, list) or len(times) > 8:
+                if not isinstance(times, list) or len(times) > 24:
                     raise ValueError('Некорректные временные метки.')
             except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
                 return self._reply(400, json.dumps({'error': str(exc)}, ensure_ascii=False).encode())
@@ -1143,16 +1228,22 @@ class Handler(BaseHTTPRequestHandler):
                 return self._reply(413, b'{"error":"Too much data"}')
             data = json.loads(self.rfile.read(length))
             images = data['images']
-            validate_images(images)
             kind = data.get('kind', 'photo')
             if kind not in ('photo', 'video'):
                 raise ValueError('Неизвестный тип исходника.')
+            validate_images(images, kind)
+            video_mode = data.get('video_mode','legacy')
+            if video_mode not in ('legacy','standard','adult') or (kind!='video' and video_mode!='legacy'):
+                raise ValueError('Режим 18+ доступен только в видеорежиме.')
+            if video_mode=='adult' and data.get('adults_confirmed') is not True:
+                raise ValueError('Для 18+ требуется подтверждение совершеннолетия участников.')
+            trace = validate_video_trace(data.get('temporal_trace')) if kind=='video' else []
             depth = data.get('depth', 'fast')
             if depth not in ('fast', 'standard', 'deep'):
                 raise ValueError('Неизвестный режим.')
             target = str(data.get('target', 'Общий генератор'))[:100]
             sampling_mode = str(data.get('sampling_mode', 'uniform'))
-            if sampling_mode not in ('uniform', 'adaptive'):
+            if sampling_mode not in ('uniform', 'adaptive','temporal'):
                 raise ValueError('Неизвестный режим выбора кадров.')
             if kind == 'video':
                 parsed_times = []
@@ -1173,7 +1264,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._reply(400, json.dumps({'error': str(exc)}, ensure_ascii=False).encode())
 
         # Avoid concurrent 35B invocations on 8 GB VRAM.
-        key = _cache_key(kind, depth, target, images, sampling_mode)
+        trace_digest=hashlib.sha256(json.dumps(trace,ensure_ascii=False).encode()).hexdigest() if trace else ''
+        key = _cache_key(kind, depth, target, images, sampling_mode, video_mode, trace_digest)
         cached = _cache_get(key)
         if cached is None and not _gpu_job_lock.acquire(blocking=False):
             return self._reply(429, json.dumps({'error': 'Qwen уже обрабатывает другое изображение.'}, ensure_ascii=False).encode())
@@ -1237,11 +1329,20 @@ class Handler(BaseHTTPRequestHandler):
                         notify('partial', stage=label, text=text_part)
             else:
                 # Split temporal sequence into small batches for a 16k context window.
-                step = 3 if depth == 'deep' else 4
+                step = 3 if depth == 'deep' or video_mode == 'adult' else 4
                 for start in range(0, len(images), step):
                     batch = images[start:start + step]
                     notify('stage', message=f'Анализ кадров {start + 1}–{start + len(batch)} из {len(images)}…')
-                    text_part = _llama_request(VIDEO_FOCUS, batch, ANALYSIS_TOKENS)
+                    if video_mode == 'legacy':
+                        video_instruction = VIDEO_FOCUS
+                    else:
+                        mode_prompt=VIDEO_OBSERVATION_ADULT if video_mode=='adult' else ''
+                        batch_times=', '.join(str(f['time']) for f in batch)
+                        video_instruction=(VIDEO_OBSERVATION+mode_prompt+
+                            '\nНаблюдаемый отрезок, метки: '+batch_times+
+                            '\nВременной анализ пикселей, только как вспомогательные данные: '+
+                            temporal_evidence_text([p for p in trace if float(batch[0]['time'])-0.5 <= p['time'] <= float(batch[-1]['time'])+0.5], 120))
+                    text_part = _llama_request(video_instruction, batch, ANALYSIS_TOKENS)
                     check_cancel()
                     observations.append(text_part)
                     notify('partial', stage=f'Кадры {start + 1}–{start + len(batch)}', text=text_part)
@@ -1259,6 +1360,39 @@ class Handler(BaseHTTPRequestHandler):
                 check_cancel()
                 analysis = reviewed
                 notify('partial', stage='Проверка исходной фотографии', text=reviewed)
+            if kind=='video' and video_mode in ('standard','adult'):
+                notify('stage',message='Видеоотчёт: участники, окружение, процесс, контакты, ритм и камера…')
+                completed=_llama_request(VIDEO_REPORT.format(
+                    mode='18+' if video_mode=='adult' else 'обычный',
+                    trace=temporal_evidence_text(trace),analysis=observations_text),
+                    [],VIDEO_REPORT_TOKENS)
+                check_cancel()
+                sections=parse_video_sections(completed)
+                notify('partial',stage='Видеоотчёт о процессе',text=completed)
+                # Motion is a separate step; photo synthesis never runs for a video.
+                for field in VIDEO_FIELDS:sections[field]=''
+                notify('stage',message='Видео: отдельная хронология и FramePack RU/EN…')
+                notes=repair_video_fields(sections, observations_text+'\n\n'+completed,
+                    [str(im.get('time','')) for im in images], notify, check_cancel)
+                flags=notes[:]
+                for field in VIDEO_REPORT_FIELDS+VIDEO_FIELDS:
+                    if not sections.get(field):flags.append(field.upper()+': не заполнено.')
+                if sections.get('timeline_ru'):
+                    absent=missing_timeline_times(sections['timeline_ru'],[str(im.get('time','')) for im in images])
+                    if absent: flags.append('В хронологии пропущены метки: '+', '.join(absent))
+                sections['quality_ru']=format_quality(flags,depth)
+                result={'kind':'video','video_mode':video_mode,'video_engine':'temporal-v0.8',
+                    'depth':depth,'target':target,'sections':sections,'raw':completed,
+                    'source_analysis':observations_text,'video_report':completed,
+                    'frame_times':[str(x['time']) for x in images],
+                    'video_sampling':sampling_mode, 'temporal_trace':trace,
+                    'temporal_limitations':'Это многократный анализ последовательных фрагментов и метрик кадра, но Qwen не получает непрерывный исходный видеопоток. Неизвестные промежутки не реконструируются как факт.',
+                    'quality_flags':flags,'complete':sum(bool(sections[k]) for k in VIDEO_REPORT_FIELDS+VIDEO_FIELDS),
+                    'total':len(VIDEO_REPORT_FIELDS+VIDEO_FIELDS),
+                    'note':'Видеоотчёт описывает временную последовательность по доступным наблюдениям. Движение между точками может быть неизвестно.'}
+                _cache_put(key,result)
+                notify('done',data=result)
+                return
             notify('stage', message='Сборка позитивных и негативных промптов RU/EN…')
             completed = _llama_request((SYNTH_VIDEO if kind == 'video' else SYNTH).format(kind=kind, target=target, analysis=analysis), [], FINAL_TOKENS)
             check_cancel()

@@ -1,7 +1,7 @@
 'use strict';
 const $ = (id) => document.getElementById(id);
 let chosen=null, type=null, objectURL=null, depth='fast', latest=null, active='positive_ru', currentJob=null;
-const groups=[
+const photoGroups=[
   ['positive_ru','Positive RU'], ['positive_en','Positive EN'],
   ['negative_ru','Negative RU'], ['negative_en','Negative EN'],
   ['appearance_ru','Внешность'], ['anatomy_ru','Анатомия'], ['pose_ru','Поза'],
@@ -9,6 +9,44 @@ const groups=[
   ['uncertainty_ru','Неопределённости'], ['visual_passport','Визуальный паспорт JSON'], ['quality_ru','Проверка качества'], ['framepack_ru','FramePack RU'],
   ['framepack_en','FramePack EN'], ['timeline_ru','Timeline RU / Хронология']
 ];
+const videoGroups=[
+  ['participants_ru','Участники'],['setting_ru','Помещение / окружение'],
+  ['process_ru','Процесс / действия'],['interactions_ru','Контакты / взаимодействия'],
+  ['rhythm_ru','Ритм и повторы'],['camera_ru','Камера'],['evidence_ru','Доказательства по времени'],
+  ['adult_context_ru','18+ · Контекст сцены'],['uncertainty_ru','Что не подтверждено'],
+  ['timeline_ru','Хронология'],['framepack_ru','Motion RU'],['framepack_en','FramePack EN'],
+  ['quality_ru','Проверка качества']
+];
+let groups=photoGroups, sourceMode='photo';
+function getVideoMode(){return $('videoContent').value;}
+function refreshSourceMode(){
+  const isVideo=sourceMode==='video';
+  groups=isVideo?videoGroups.filter(([k])=>k!=='adult_context_ru'||getVideoMode()==='adult'):photoGroups;
+  $('videoControls').hidden=!isVideo;
+  $('photoTarget').hidden=isVideo;
+  $('motionDirector').hidden=!isVideo;
+  $('file').accept=isVideo?'video/*,.mp4,.webm,.mov,.mkv':'image/*,.png,.jpg,.jpeg,.webp';
+  $('drop').querySelector('.empty strong').textContent=isVideo?'Выбрать видео':'Выбрать изображение';
+  $('videoAdultNotice').hidden=!isVideo||getVideoMode()!=='adult';
+  $('modePhoto').classList.toggle('active',!isVideo);
+  $('modeVideo').classList.toggle('active',isVideo);
+  $('run').textContent=isVideo?'Проанализировать видео':'Извлечь промпты из изображения';
+  active=groups[0][0];render();
+}
+function selectSourceMode(newMode){
+  if(type&&type!==newMode){
+    chosen=null;type=null;
+    if(objectURL){URL.revokeObjectURL(objectURL);objectURL=null;}
+    $('photoPreview').removeAttribute('src');$('videoPreview').removeAttribute('src');
+    $('drop').classList.remove('loaded');$('filename').textContent='Файл не выбран';
+    $('run').disabled=true;$('frameStrip').style.display='none';$('frameStrip').replaceChildren();
+  }
+  sourceMode=newMode;refreshSourceMode();
+}
+$('modePhoto').onclick=()=>selectSourceMode('photo');
+$('modeVideo').onclick=()=>selectSourceMode('video');
+$('videoContent').onchange=()=>refreshSourceMode();
+
 function status(s, danger=false){ $('statusline').textContent=s; $('statusline').style.color=danger?'#f09d99':'#d6bbdf'; }
 // PES_STATUS_V051: UI tracks stage notifications and elapsed time, not model tokens.
 const stageTracker = { running:false, startedAt:0, startedStepAt:0, step:0, last:'', history:[], timer:null };
@@ -92,6 +130,7 @@ function getFile(file){
   const isVideo=file.type.startsWith('video/') || /\.(mp4|webm|mov|mkv)$/i.test(file.name);
   const isImage=file.type.startsWith('image/') || /\.(png|jpe?g|webp)$/i.test(file.name);
   if(!isImage&&!isVideo){status('Нужен фото- или видеофайл.',true);return;}
+  sourceMode=isVideo?'video':'photo';refreshSourceMode();
   if(objectURL)URL.revokeObjectURL(objectURL); chosen=file;type=isVideo?'video':'photo';objectURL=URL.createObjectURL(file);
   $('frameStrip').style.display='none';$('frameStrip').replaceChildren();
   $('drop').classList.add('loaded');$('photoPreview').style.display=isImage?'block':'none';$('videoPreview').style.display=isVideo?'block':'none';
@@ -166,33 +205,32 @@ async function seekFrame(vid,sec){
 }
 async function framesVideo(){
   const vid=document.createElement('video');vid.preload='auto';vid.muted=true;vid.playsInline=true;vid.src=objectURL;
-  await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('Не удалось прочитать видео. Проверь формат/кодек (лучше MP4 H.264).')),18000);vid.onloadedmetadata=()=>{clearTimeout(timer);resolve();};vid.onerror=()=>{clearTimeout(timer);reject(new Error('Браузер не поддерживает кодек видео. Попробуй MP4 H.264 или WebM.'));};});
-  if(!Number.isFinite(vid.duration)||vid.duration<=0||!vid.videoWidth)throw Error('Не удалось определить длительность и размеры видео.');
-  const adaptive=$('frameCount').value==='adaptive';
-  const count=adaptive?8:Math.min(8,Math.max(3,Number($('frameCount').value)||5));
-  const minTime=Math.min(0.05,vid.duration/5),maxTime=Math.max(minTime+0.001,vid.duration-Math.min(0.05,vid.duration/5));
+  await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('Не удалось открыть видео. Лучше MP4 H.264.')),18000);
+    vid.onloadedmetadata=()=>{clearTimeout(timer);resolve();};vid.onerror=()=>{clearTimeout(timer);reject(Error('Браузер не поддерживает видео.'));};});
+  if(!Number.isFinite(vid.duration)||vid.duration<=0||!vid.videoWidth)throw Error('Недопустимая длительность видео.');
+  const detailed=$('videoDetail').value==='detailed'||getVideoMode()==='adult';
+  const samples=detailed?20:12;
+  const checks=detailed?96:48;
+  const minTime=Math.min(0.03,vid.duration/10),maxTime=Math.max(minTime+0.001,vid.duration-Math.min(0.03,vid.duration/10));
   const at=(i,total)=>minTime+(maxTime-minTime)*i/Math.max(1,total-1);
-  const out=[];
+  const candidates=[],trace=[],out=[];
+  let prev=null;
   try{
-    let points;
-    if(adaptive){
-      const candidates=[];
-      for(let i=0;i<18;i++){
-        const sec=at(i,18);
-        await seekFrame(vid,sec);await pause(35);
-        candidates.push({time:sec,feature:frameFeature(vid)});
-        const msg='Поиск ключевых изменений: '+(i+1)+'/18…';status(msg);stageUpdate(msg);
-      }
-      points=chooseMotionCandidates(candidates,count).map(item=>item.time);
-      stageUpdate('Выбрано '+points.length+' ключевых кадров по визуальным изменениям.');
-    }else points=Array.from({length:count},(_,i)=>at(i,count));
-    for(let n=0;n<points.length;n++){
-      await seekFrame(vid,points[n]);await pause(35);
-      out.push({time:points[n].toFixed(2),data:canvasData(vid,vid.videoWidth,vid.videoHeight,depth==='deep'?1200:980)});
-      const msg='Извлечение кадров: '+(n+1)+'/'+points.length+'…';status(msg);stageUpdate(msg);
+    for(let i=0;i<checks;i++){
+      const sec=at(i,checks);await seekFrame(vid,sec);await pause(17);
+      const feature=frameFeature(vid);const diff=prev?visualDifference(feature,prev):0;
+      prev=feature;trace.push({time:sec.toFixed(3),change:Number(diff.toFixed(2))});
+      candidates.push({time:sec,feature});
+      if(i%4===0||i===checks-1){const msg='Видеопросмотр: '+(i+1)+' из '+checks+' временных точек';status(msg);stageUpdate(msg);}
+    }
+    const picked=chooseMotionCandidates(candidates,samples);
+    for(let n=0;n<picked.length;n++){
+      await seekFrame(vid,picked[n].time);await pause(17);
+      out.push({time:picked[n].time.toFixed(3),data:canvasData(vid,vid.videoWidth,vid.videoHeight,depth==='deep'?1050:800)});
+      const msg='Выбор видеомоментов: '+(n+1)+'/'+picked.length;status(msg);stageUpdate(msg);
     }
     renderFrameSamples(out);
-    return out;
+    return {images:out,trace};
   }finally{vid.removeAttribute('src');vid.load();}
 }
 function download(name,body,mime){const blob=new Blob([body],{type:mime});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),2000);}
@@ -211,7 +249,7 @@ $('importJsonFile').onchange=async(e)=>{
     if(f.size>2000000)throw Error('JSON слишком большой.');
     const obj=JSON.parse(await f.text());
     if(!obj||!obj.sections||typeof obj.sections!=='object'||!['video','photo'].includes(obj.kind))throw Error('Это не результат Prompt Extractor Studio.');
-    latest=obj;active='positive_ru';render();
+    latest=obj;sourceMode=obj.kind;if(obj.video_mode==='adult')$('videoContent').value='adult';refreshSourceMode();active=groups[0][0];render();
     $('exportTxt').disabled=false;$('exportJson').disabled=false;videoRepairButton();
     status('Загружены прежние результаты. Кадры повторно анализировать не нужно.');
   }catch(err){status('Ошибка загрузки JSON: '+err.message,true);}
@@ -257,22 +295,26 @@ async function streamAnalysis(payload){
       if(msg.event==='cancelled'){stageEnd(false,true);status(msg.message||'Анализ остановлен. Промежуточные записи доступны в блоке черновиков.',true);return;}
       if(msg.event==='error')throw Error(msg.message);
       if(msg.event==='done'){
-        stageEnd(false);latest=msg.data;active='positive_ru';render();$('exportTxt').disabled=false;$('exportJson').disabled=false;
+        stageEnd(false);latest=msg.data;active=groups[0][0];render();$('exportTxt').disabled=false;$('exportJson').disabled=false;
         videoRepairButton();
         const cachedNote=latest.cache_hit?' Из кэша без повторной генерации.':'';
         const n=latest.complete; const issues=(latest.quality_flags||[]).filter(s=>!s.startsWith('Формальные проверки')); status('Анализ завершён: '+n+'/'+latest.total+' разделов.'+cachedNote+' '+(issues.length?'Замечания: '+issues.length+'. Открой «Проверка качества».':'Сверь результат с оригиналом.'),n<latest.total||issues.length>0);
-        if(n<latest.total-4){active='positive_ru';render(); status('Модель вернула неполный результат: '+n+'/'+latest.total+'. Исходный ответ сохранён в JSON. Проверь лимиты генерации.',true);}
+        if(n<latest.total-4){active=groups[0][0];render(); status('Модель вернула неполный результат: '+n+'/'+latest.total+'. Исходный ответ сохранён в JSON. Проверь лимиты генерации.',true);}
       }
     }
   }
 }
 $('run').onclick=async()=>{
-  if(!chosen)return;stageBegin();const b=$('run');b.disabled=true;b.textContent='Анализ выполняется…';
+  if(!chosen)return;
+  if(type==='video'&&getVideoMode()==='adult'&&!$('videoAdultConfirm').checked){status('Для режима 18+ подтвердите совершеннолетие участников.',true);return;}
+  stageBegin();const b=$('run');b.disabled=true;b.textContent='Анализ выполняется…';
   currentJob=(crypto.randomUUID ? crypto.randomUUID().replace(/-/g,'') : Array.from(crypto.getRandomValues(new Uint8Array(16)), x=>x.toString(16).padStart(2,'0')).join(''));
   $('stop').disabled=false;$('partialBox').style.display='none';$('partialPreview').textContent='';$('saveDraft').disabled=true;
-  try{status('Подготовка исходника…');const images=type==='video'?await framesVideo():await framesImage();status('Отправка данных в локальную Qwen…');
-    await streamAnalysis({kind:type,depth,target:$('target').value,job_id:currentJob,
-      sampling_mode:type==='video' && $('frameCount').value==='adaptive'?'adaptive':'uniform',images});
+  try{status('Подготовка исходника…');const video=type==='video'?await framesVideo():null;const images=video?video.images:await framesImage();status('Отправка данных в локальную Qwen…');
+    await streamAnalysis({kind:type,depth,target:type==='video'?'FramePack F1 / Video analysis':$('target').value,job_id:currentJob,
+      sampling_mode:type==='video'?'temporal':'uniform',video_mode:type==='video'?getVideoMode():'legacy',
+      adults_confirmed:type==='video'&&getVideoMode()==='adult'&&$('videoAdultConfirm').checked,
+      temporal_trace:video?video.trace:undefined,images});
   }catch(err){stageEnd(true);status('Ошибка: '+err.message,true);}
   finally{b.disabled=false;b.textContent='Извлечь промпты';$('stop').disabled=true;currentJob=null;}
 };
@@ -286,7 +328,7 @@ $('stop').onclick=async()=>{
   }catch(err){status('Не удалось запросить остановку: '+err.message,true);}
 };
 async function ping(){try{const r=await fetch('/health',{cache:'no-store'});const h=await r.json();$('dot').classList.toggle('ok',!!h.ready);$('modelStatus').textContent='Qwen3.5: '+h.status;}catch{$('dot').classList.remove('ok');$('modelStatus').textContent='Нет связи с локальным приложением';}}
-render();ping();setInterval(ping,12000);
+refreshSourceMode();ping();setInterval(ping,12000);
 fetch('/api/version',{cache:'no-store'}).then(r=>r.json()).then(x=>{
   $('versionHeader').textContent='v'+x.version;
   $('studioVersion').textContent='v'+x.version;

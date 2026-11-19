@@ -175,7 +175,7 @@ class Tests(unittest.TestCase):
         with urllib.request.urlopen(self.url + '/api/version') as response:
             version = json.load(response)['version']
         self.assertEqual(version, app.updater.VERSION)
-        self.assertEqual(version, '0.7.0')
+        self.assertEqual(version, '0.8.0')
 
     def test_home_health(self):
         with urllib.request.urlopen(self.url) as r:
@@ -627,5 +627,98 @@ class MockFramePackLiveProtocolTests(unittest.TestCase):
                 self.assertEqual(server.args_received[4],5)
         finally:
             server.shutdown();server.server_close()
+
+# v0.8 video-mode regression tests
+class Video080(unittest.TestCase):
+    @staticmethod
+    def image(time):
+        return {'time':time,'data':'data:image/jpeg;base64,'+base64.b64encode(b'fake').decode()}
+
+    def test_video_only_report_fields(self):
+        self.assertNotIn('positive_ru',app.VIDEO_REPORT_FIELDS)
+        self.assertNotIn('anatomy_ru',app.VIDEO_REPORT_FIELDS)
+        for name in ('participants_ru','setting_ru','process_ru','interactions_ru','rhythm_ru','adult_context_ru'):
+            self.assertIn(name,app.VIDEO_REPORT_FIELDS)
+        self.assertIn('===PROCESS_RU===',app.VIDEO_REPORT)
+        self.assertIn('последовательности',app.VIDEO_OBSERVATION.lower())
+        self.assertIn('РЕЖИМ 18+',app.VIDEO_OBSERVATION_ADULT)
+
+    def test_temporal_trace_validation(self):
+        good=[{'time':'0.1','change':1},{'time':'0.5','change':25.4}]
+        value=app.validate_video_trace(good)
+        self.assertEqual(value,[{'time':0.1,'change':1.0},{'time':0.5,'change':25.4}])
+        self.assertIn('0.50с',app.temporal_evidence_text(value))
+        for bad in ([{'time':1,'change':0},{'time':1,'change':1}],
+                    [{'time':0,'change':256}], [{'time':-1,'change':0}],
+                    [1], [{'time':0,'change':'not a number'}]):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):app.validate_video_trace(bad)
+
+    def test_photo_cannot_use_video_mode(self):
+        self.assertRaisesRegex(ValueError,'1 до 8',app.validate_images,[self.image('0')]*9,'photo')
+        self.assertEqual(len([self.image(str(n)) for n in range(20)]),20)
+        app.validate_images([self.image(str(n)) for n in range(20)],'video')
+
+    def test_video_parse(self):
+        raw='===PARTICIPANTS_RU===\nДва человека.\n===PROCESS_RU===\nИзменения в 0.5 и 1.5 с.\n===UNCERTAINTY_RU===\nКонтакт закрыт.'
+        fields=app.parse_video_sections(raw)
+        self.assertEqual(fields['participants_ru'],'Два человека.')
+        self.assertEqual(fields['process_ru'],'Изменения в 0.5 и 1.5 с.')
+        self.assertEqual(fields['rhythm_ru'],'')
+
+    def test_video_mode_cache_is_separate(self):
+        images=[self.image('0.1'),self.image('0.2')]
+        a=app._cache_key('video','standard','FramePack',images,'temporal','standard','same')
+        b=app._cache_key('video','standard','FramePack',images,'temporal','adult','same')
+        c=app._cache_key('video','standard','FramePack',images,'temporal','adult','different')
+        self.assertEqual(len({a,b,c}),3)
+
+    def test_actual_separate_video_path(self):
+        report='\n'.join('==='+p.upper()+'===\n'+p+' — подтверждённые изменения в 0.100 и 0.900 с.' for p in app.VIDEO_REPORT_FIELDS)
+        motion=('===FRAMEPACK_RU===\nУчастник изменяет положение головы между наблюдениями.\n'
+                '===FRAMEPACK_EN===\nThe subject changes their head position between observed moments.\n'
+                '===TIMELINE_RU===\n0.100 с — начало. 0.900 с — конец.')
+        calls=[]
+        def fake(prompt,images,max_tokens=2400,system_message=None):
+            calls.append((prompt,len(images)))
+            if '===FRAMEPACK_RU===' in prompt:return motion
+            if '===PARTICIPANTS_RU===' in prompt:return report
+            return '0.100 с — положение А. 0.900 с — положение Б. Видимая смена положения между моментами.'
+        # Instantiate a real local server to cover validation and streaming.
+        from http.server import ThreadingHTTPServer
+        import threading
+        srv=ThreadingHTTPServer(('127.0.0.1',0),app.Handler)
+        url=f'http://127.0.0.1:{srv.server_address[1]}'
+        th=threading.Thread(target=srv.serve_forever,daemon=True);th.start()
+        try:
+            data={'kind':'video','video_mode':'adult','adults_confirmed':True,'depth':'fast',
+                  'target':'FramePack F1','sampling_mode':'temporal',
+                  'images':[self.image('0.100'),self.image('0.900')],
+                  'temporal_trace':[{'time':0.1,'change':0.0},{'time':0.9,'change':24.3}]}
+            with patch.object(app,'_llama_request',side_effect=fake):
+                req=urllib.request.Request(url+'/api/analyze',data=json.dumps(data).encode(),
+                        headers={'Content-Type':'application/json'})
+                with urllib.request.urlopen(req,timeout=5) as response:
+                    events=[json.loads(line) for line in response.read().decode().splitlines() if line]
+            self.assertEqual(events[-1]['event'],'done')
+            result=events[-1]['data']
+            self.assertEqual(result['video_mode'],'adult')
+            self.assertEqual(result['video_engine'],'temporal-v0.8')
+            self.assertIn('process_ru',result['sections'])
+            self.assertNotIn('positive_ru',result['sections'])
+            self.assertIn('framepack_en',result['sections'])
+            self.assertIn('timeline_ru',result['sections'])
+            self.assertEqual(len(calls),3)
+            self.assertIn('РЕЖИМ 18+',calls[0][0]);self.assertEqual(calls[0][1],2)
+            self.assertIn('===PROCESS_RU===',calls[1][0]);self.assertEqual(calls[1][1],0)
+            self.assertIn('===FRAMEPACK_RU===',calls[2][0]);self.assertEqual(calls[2][1],0)
+            # Reject misleading adult setting without consent.
+            data['adults_confirmed']=False
+            req=urllib.request.Request(url+'/api/analyze',data=json.dumps(data).encode(),
+                    headers={'Content-Type':'application/json'})
+            with self.assertRaises(urllib.error.HTTPError) as exc: urllib.request.urlopen(req,timeout=5)
+            self.assertEqual(exc.exception.code,400)
+        finally:
+            srv.shutdown();srv.server_close()
 
 if __name__=='__main__':unittest.main(verbosity=2)

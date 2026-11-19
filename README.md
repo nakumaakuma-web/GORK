@@ -1,26 +1,13 @@
-# Prompt Extractor Studio
+# Prompt Extractor Studio v0.8.0
 
-Local reverse prompting for still images and sampled video frames with an existing [llama.cpp](https://github.com/ggml-org/llama.cpp) vision model endpoint. Local UI: `http://127.0.0.1:8765`.
+Local image prompt reverse analysis and **separate time-oriented video analysis** via Qwen3.5/llama.cpp and FramePack F1 Motion Director.
 
-- No user images, video, model weights, credentials, or generated prompts are published here.
-- Available outputs: Positive / Negative (RU/EN), appearance, pose, lighting, FramePack motion drafts.
-- This repository is an update channel for **Prompt Extractor Studio only**.
-- User approval is required to install each update in the app; upgrades verify SHA-256 checksums and keep backups.
+- Photo mode: Positive/Negative RU/EN, appearance, anatomy, pose and style.
+- Video mode: `standard` or `adult` (18+, with user age confirmation), participants, setting, visible action process, contacts, rhythm, camera, timestamped evidence, uncertainty, timeline and FramePack RU/EN.
+- Video temporal scan: 48/96 evenly spaced pixel-difference probes; 12/20 timestamped observations selected for sequential Qwen analysis. No guesswork about unobserved intervals.
+- Adult mode changes **analytical attention** to observed interactions, contacts, sequence and rhythm. Reports are neutral and evidence-based; the mode does not prove the content category or participant age.
+- Built-in Motion Director has anime / semi-realistic 2.5D / realistic styles and optional local FramePack F1 connection.
 
-**Current version:** v0.7.0. See [README_RU.md](README_RU.md) for setup, updater linking and limitations.
+**Important limitation:** temporal scanning is **not native video token inference**. The currently installed llama.cpp input uses groups of images. Pixel differences alone cannot identify actions. Native Conv3D / temporal M-RoPE handling would require a validated compatible runtime or separate video model. Video findings require verification against the original clip.
 
-**v0.7:** deep photo mode rechecks original image; separate anatomy, pose and diagnostic consistency flags.
-
-### 0.5.0
-Fix language labels for Positive/Negative RU/EN with automatic validation, an isolated Qwen translation retry, and a fail-closed warning for repeated mismatches.
-
-Version 0.5.1: expanded live status monitor with elapsed time, frame ranges, stage history and truthful indeterminate progress bar.
-
-
-### Video-field repair (v0.7.0)
-When Qwen omits FramePack RU/EN or Timeline RU, Studio makes a separate text-only recovery call from its saved analysis. Existing results can be loaded from exported JSON and repaired without reprocessing video frames.
-
-
-## Motion Director v0.7
-
-A local storyboard-to-video workflow: anime / semi-realistic / photorealistic presets, up to 5 timed motion beats, camera & pacing, RU/EN motion prompt composition using local Qwen (or manual English prompt), editable JSON/TXT export. Optional experimental integration with the *official local FramePack F1 Gradio interface* using a localhost-only, schema-validated bridge. The bridge transfers the source image, sends the generated motion prompt and supports MP4 preview/download. No remote generation service is used. No trained models are bundled or modified. The FramePack integration was validated using local API mocks, **not** a live FramePack install. Consult README_RU.md for complete limits and instructions.
+See [README_RU.md](README_RU.md) for Russian instructions. Local UI: http://127.0.0.1:8765, Qwen server: http://127.0.0.1:8080.
