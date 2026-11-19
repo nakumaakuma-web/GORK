@@ -175,7 +175,7 @@ class Tests(unittest.TestCase):
         with urllib.request.urlopen(self.url + '/api/version') as response:
             version = json.load(response)['version']
         self.assertEqual(version, app.updater.VERSION)
-        self.assertEqual(version, '0.6.0')
+        self.assertEqual(version, '0.7.0')
 
     def test_home_health(self):
         with urllib.request.urlopen(self.url) as r:
@@ -455,5 +455,177 @@ class Tests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as cm:urllib.request.urlopen(req,timeout=10)
         self.assertEqual(cm.exception.code,400)
 
+
+class MotionDirectorV07Tests(unittest.TestCase):
+    def base_project(self):
+        return {'style':'anime','camera':'locked','pace':'natural','duration':5,
+                'rating':'standard','identity_ru':'Женщина с зелёными глазами и тёмными волосами.',
+                'scene_ru':'Небольшая комната с тёплым светом.',
+                'direction_ru':'Сохранять лицо и одежду неизменными.',
+                'manual_en':'The adult character turns her head, raises one hand, and smiles naturally.',
+                'beats':[{'start':0,'end':2,'action':'Поворачивает голову направо.'},
+                         {'start':2,'end':5,'action':'Поднимает руку и улыбается.'}]}
+
+    def test_18_plus_requires_adult_confirmation(self):
+        d=self.base_project();d.update(rating='adult',adults_confirmed=False)
+        with self.assertRaisesRegex(ValueError,'совершеннолетие'):app.validate_motion_project(d)
+        d['adults_confirmed']=True
+        self.assertEqual(app.validate_motion_project(d)['rating'],'adult')
+
+    def test_beats_strict_non_overlapping(self):
+        d=self.base_project();d['beats'][1]['start']=1.5
+        with self.assertRaisesRegex(ValueError,'наложений'):app.validate_motion_project(d)
+        d=self.base_project();d['beats'][1]['end']=6
+        with self.assertRaises(ValueError):app.validate_motion_project(d)
+
+    def test_reject_invalid_style_and_camera(self):
+        d=self.base_project();d['style']='unknown'
+        with self.assertRaises(ValueError):app.validate_motion_project(d)
+        d=self.base_project();d['camera']='drone'
+        with self.assertRaises(ValueError):app.validate_motion_project(d)
+
+    def test_manual_english_does_not_call_qwen(self):
+        d=self.base_project()
+        with patch.object(app,'_llama_request',side_effect=AssertionError('Qwen must not run')):
+            result=app.build_motion_director(d)
+        self.assertTrue(result['manual_input'])
+        self.assertIn('anime',result['motion_en'].lower())
+        self.assertIn('0–2',result['shotlist_ru'])
+        self.assertIn('контур',result['motion_ru'])
+
+    def test_russian_english_llm_prompt_pair(self):
+        d=self.base_project();d['manual_en']='';d['style']='realistic'
+        answer='===MOTION_RU===\nЖенщина медленно поворачивает голову вправо, затем поднимает руку и улыбается.\n===MOTION_EN===\nThe woman turns her head right, then raises a hand and smiles.'
+        with patch.object(app,'_llama_request',return_value=answer) as q:
+            result=app.build_motion_director(d)
+        self.assertFalse(result['manual_input'])
+        self.assertIn('photographic realism',result['motion_en'])
+        self.assertIn('вправо',result['motion_ru'])
+        self.assertIn('0–2',q.call_args.args[0])
+
+    def test_bad_russian_translation_is_rejected(self):
+        d=self.base_project();d['manual_en']=''
+        answer='===MOTION_RU===\nThe woman is standing.\n===MOTION_EN===\nShe moves her hand.'
+        with patch.object(app,'_llama_request',return_value=answer):
+            with self.assertRaisesRegex(ValueError,'пару RU/EN'):app.build_motion_director(d)
+
+    def test_framepack_restricts_all_network_targets_to_loopback(self):
+        for value in ['https://example.com:7860','http://192.168.1.1:7860','http://127.0.0.1:8765','http://localhost:8080','http://x@127.0.0.1:7860','http://127.0.0.1:7860/evil','http://127.0.0.1:7860?url=x']:
+            with self.subTest(value=value),self.assertRaises(ValueError):app._framepack_origin(value)
+        self.assertEqual(app._framepack_origin('http://localhost:7861'),'http://127.0.0.1:7861')
+
+    def test_framepack_config_api_requires_matching_input_schema(self):
+        import io
+        good={'dependencies':[{'api_name':'process','inputs':list(range(13)),'outputs':list(range(6))}]}
+        with patch.object(app.urllib.request,'urlopen',return_value=io.BytesIO(json.dumps(good).encode())):
+            name,_=app._framepack_config('http://127.0.0.1:7860')
+        self.assertEqual(name,'process')
+        bad={'dependencies':[{'api_name':'process','inputs':[1,2,3],'outputs':[]}]}
+        with patch.object(app.urllib.request,'urlopen',return_value=io.BytesIO(json.dumps(bad).encode())):
+            with self.assertRaisesRegex(ValueError,'схема'):app._framepack_config('http://127.0.0.1:7860')
+
+    def test_gradio_sse_generates_file_only_on_confirmed_result(self):
+        import io
+        result_url='http://127.0.0.1:7860/gradio_api/file=output.mp4'
+        messages=[]
+        sse=b'event: generating\ndata: [null,null,"stage",null,null,null]\n\nevent: complete\ndata: [{"url":"'+result_url.encode()+b'"}]\n\n'
+        data={'url':'http://127.0.0.1:7860','prompt':'The character moves her arm.',
+              'image':'data:image/jpeg;base64,'+base64.b64encode(b'fake-image-dummy'*10).decode(),
+              'duration':5,'seed':31337,'teacache':False}
+        with patch.object(app,'_framepack_config',return_value=('process',{})),\
+             patch.object(app,'_framepack_upload',return_value='C:/tmp/source.jpg'),\
+             patch.object(app,'_framepack_http_json',return_value={'event_id':'abc123'}),\
+             patch.object(app.urllib.request,'urlopen',return_value=io.BytesIO(sse)),\
+             patch.object(app,'_framepack_save_result',return_value='framepack_20261119_201010_1234abcd.mp4') as sav:
+            app.framepack_render(data,lambda e,**kw:messages.append((e,kw)))
+        self.assertTrue(any(e=='done' for e,_ in messages))
+        self.assertEqual(sav.call_args.args[0],result_url)
+
+    def test_framepack_no_video_means_error_not_fake_success(self):
+        import io
+        data={'url':'http://127.0.0.1:7860','prompt':'The woman walks slowly.',
+              'image':'data:image/jpeg;base64,'+base64.b64encode(b'fake-image-dummy'*10).decode(), 'duration':5}
+        with patch.object(app,'_framepack_config',return_value=('process',{})),\
+             patch.object(app,'_framepack_upload',return_value='C:/tmp/source.jpg'),\
+             patch.object(app,'_framepack_http_json',return_value={'event_id':'abc123'}),\
+             patch.object(app.urllib.request,'urlopen',return_value=io.BytesIO(b'event: complete\ndata: [null]\n\n')):
+            with self.assertRaisesRegex(RuntimeError,'без итогового MP4'):app.framepack_render(data,lambda *args,**kw:None)
+
+    def test_no_remote_video_result_url(self):
+        payload={'url':'https://example.com/leak.mp4','path':''}
+        self.assertEqual(app._framepack_result_file([payload],'http://127.0.0.1:7860'),'')
+        self.assertIn('gradio_api/file=',app._framepack_result_file([{'path':'C:/outputs/a.mp4'}],'http://127.0.0.1:7860'))
+
+    def test_backend_motion_route_requires_local_origin(self):
+        d=self.base_project();data=json.dumps(d).encode('utf-8')
+        url='http://127.0.0.1:'+str(self.app_server.server_address[1])+'/api/motion/build'
+        bad=urllib.request.Request(url,data=data,headers={'Content-Type':'application/json'},method='POST')
+        with self.assertRaises(urllib.error.HTTPError) as exc:urllib.request.urlopen(bad,timeout=3)
+        self.assertEqual(exc.exception.code,403)
+        good=urllib.request.Request(url,data=data,headers={'Content-Type':'application/json','Origin':'http://127.0.0.1:'+str(self.app_server.server_address[1])},method='POST')
+        with urllib.request.urlopen(good,timeout=3) as response:
+            result=json.load(response)
+        self.assertTrue(result['motion_en'])
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app_server=server_for(app.Handler)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.app_server.shutdown();cls.app_server.server_close()
+
+class MockFramePackLiveProtocolTests(unittest.TestCase):
+    def test_end_to_end_mock_gradio_without_external_requests(self):
+        import tempfile
+        from pathlib import Path
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        class FakeOfficialF1(BaseHTTPRequestHandler):
+            def log_message(self,*args):pass
+            def do_GET(self):
+                if self.path=='/config':
+                    payload={'dependencies':[{'api_name':'process','inputs':list(range(13)),'outputs':list(range(6))}]}
+                    content=json.dumps(payload).encode();self.send_response(200)
+                    self.send_header('Content-Length',str(len(content)));self.end_headers();self.wfile.write(content)
+                elif self.path=='/gradio_api/call/process/fake-event-123':
+                    url=f'http://127.0.0.1:{self.server.server_port}/gradio_api/file=output.mp4'
+                    content=('event: generating\ndata: [null,null,null,null,null,null]\n\n'
+                             'event: complete\ndata: '+json.dumps([{'video':{'url':url,'path':'output.mp4'}},None,None,None,None,None])+'\n\n').encode()
+                    self.send_response(200);self.send_header('Content-Type','text/event-stream');self.end_headers();self.wfile.write(content)
+                elif self.path=='/gradio_api/file=output.mp4':
+                    content=b'FAKE MP4 BYTES FOR MOCK ONLY!'+b'0'*500
+                    self.send_response(200);self.send_header('Content-Length',str(len(content)));self.end_headers();self.wfile.write(content)
+                else:self.send_response(404);self.end_headers()
+            def do_POST(self):
+                length=int(self.headers['Content-Length']);body=self.rfile.read(length)
+                if self.path=='/gradio_api/upload':
+                    self.server.upload_received=('multipart/form-data' in self.headers['Content-Type'] and b'fake-image' in body)
+                    content=b'["C:/tmp/source.jpg"]'
+                elif self.path=='/gradio_api/call/process':
+                    j=json.loads(body);self.server.args_received=j['data'];content=b'{"event_id":"fake-event-123"}'
+                else:self.send_response(404);self.end_headers();return
+                self.send_response(200);self.send_header('Content-Type','application/json');self.end_headers();self.wfile.write(content)
+        server=ThreadingHTTPServer(('127.0.0.1',0),FakeOfficialF1)
+        server.server_port=server.server_address[1]
+        thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+        try:
+            with tempfile.TemporaryDirectory() as tmp,patch.object(app,'ROOT',Path(tmp)):
+                url='http://127.0.0.1:'+str(server.server_port)
+                src='data:image/jpeg;base64,'+base64.b64encode(b'fake-image'*20).decode()
+                data={'url':url,'image':src,'prompt':'The woman slowly turns her head and raises one hand.',
+                      'duration':5,'seed':2,'teacache':False}
+                events=[]
+                app.framepack_render(data,lambda ev,**kw:events.append((ev,kw)))
+                result=events[-1]
+                self.assertEqual(result[0],'done')
+                output=Path(tmp)/'outputs'/result[1]['filename']
+                self.assertTrue(output.exists())
+                self.assertTrue(output.read_bytes().startswith(b'FAKE MP4'))
+                self.assertTrue(server.upload_received)
+                self.assertEqual(len(server.args_received),13)
+                self.assertEqual(server.args_received[1],data['prompt'])
+                self.assertEqual(server.args_received[4],5)
+        finally:
+            server.shutdown();server.server_close()
 
 if __name__=='__main__':unittest.main(verbosity=2)

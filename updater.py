@@ -13,13 +13,14 @@ import os
 import re
 import shutil
 import tempfile
+import time
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-VERSION = '0.6.0'
+VERSION = '0.7.0'
 CONFIG_NAME = 'update_config.json'
 DEFAULT_MANIFEST_URL = 'https://raw.githubusercontent.com/nakumaakuma-web/GORK/main/update-manifest.json'
 # Files deliberately limited; models, user data, saved results and configs untouched.
@@ -62,7 +63,7 @@ def _version_tuple(text: str) -> tuple[int, ...]:
 
 
 def _get(url: str, limit: int) -> bytes:
-    request = urllib.request.Request(url, headers={'User-Agent': 'PromptExtractorStudio/' + VERSION})
+    request = urllib.request.Request(url, headers={'User-Agent': 'PromptExtractorStudio/' + VERSION, 'Cache-Control': 'no-cache', 'Pragma': 'no-cache'})
     try:
         with urllib.request.urlopen(request, timeout=20) as res:
             if not _trusted_url(res.geturl()):
@@ -86,6 +87,16 @@ def _trusted_url(url: str) -> bool:
     } and not p.username and not p.password and not p.fragment
 
 
+def _uncached_manifest_url(url: str) -> str:
+    # A version-independent cache-buster avoids stale raw.githubusercontent.com
+    # manifests when a new GitHub release was pushed only minutes ago.
+    p = urllib.parse.urlsplit(url)
+    query = urllib.parse.parse_qsl(p.query, keep_blank_values=True)
+    query = [(k, v) for k,v in query if k != 'pes_check']
+    query.append(('pes_check', str(time.time_ns())))
+    return urllib.parse.urlunsplit((p.scheme, p.netloc, p.path, urllib.parse.urlencode(query), p.fragment))
+
+
 def check(root: Path = ROOT) -> dict:
     settings = config(root)
     url = str(settings.get('manifest_url', '')).strip()
@@ -95,7 +106,7 @@ def check(root: Path = ROOT) -> dict:
     if not _trusted_url(url):
         raise UpdateError('Допускается только HTTPS-манифест на GitHub. Проверь update_config.json.')
     try:
-        manifest = json.loads(_get(url, MAX_MANIFEST_BYTES).decode('utf-8'))
+        manifest = json.loads(_get(_uncached_manifest_url(url), MAX_MANIFEST_BYTES).decode('utf-8'))
     except (ValueError, UnicodeError) as exc:
         raise UpdateError('Некорректный JSON манифеста.') from exc
     if not isinstance(manifest, dict) or manifest.get('application') != 'prompt-extractor-studio':

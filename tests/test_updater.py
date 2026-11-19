@@ -32,7 +32,7 @@ class UpdaterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             (root/'update_config.json').write_text(json.dumps({'manifest_url':'https://raw.githubusercontent.com/me/pes/main/update-manifest.json'}))
-            fake={'application':'prompt-extractor-studio','version':'0.6.1',
+            fake={'application':'prompt-extractor-studio','version':'0.7.1',
                   'files':[{'path':'../secrets.txt', 'size':0,'sha256':'0'*64}]}
             with patch.object(updater,'_get',return_value=json.dumps(fake).encode()):
                 with self.assertRaises(updater.UpdateError):
@@ -58,16 +58,16 @@ class UpdaterTests(unittest.TestCase):
             (root/'saved_results.json').write_text('DO NOT TOUCH')
             new=b'print("NEW")\n'
             url='https://raw.githubusercontent.com/me/pes/main/update-manifest.json'
-            body={'application':'prompt-extractor-studio','version':'0.6.1',
+            body={'application':'prompt-extractor-studio','version':'0.7.1',
                   'files':[{'path':'app.py','size':len(new),'sha256':hashlib.sha256(new).hexdigest()}]}
             (root/'update_config.json').write_text(json.dumps({'manifest_url':url}))
             def fake_get(path, limit):
-                return json.dumps(body).encode() if path==url else new
+                return json.dumps(body).encode() if path.startswith(url) else new
             with patch.object(updater,'_get',side_effect=fake_get):
                 info=updater.check(root)
                 self.assertEqual(info['status'],'available')
                 result=updater.install(root,info)
-            self.assertEqual(result['version'],'0.6.1')
+            self.assertEqual(result['version'],'0.7.1')
             self.assertEqual((root/'app.py').read_bytes(),new)
             self.assertEqual((Path(result['backup'])/'app.py').read_text(),'OLD')
             self.assertEqual((root/'qwen.gguf').read_text(),'DO NOT TOUCH')
@@ -79,7 +79,7 @@ class UpdaterTests(unittest.TestCase):
             (root/'app.py').write_text('OLD')
             url='https://raw.githubusercontent.com/me/pes/main/update-manifest.json'
             data=b'new but corrupted'
-            body={'application':'prompt-extractor-studio','version':'0.6.1',
+            body={'application':'prompt-extractor-studio','version':'0.7.1',
                   'files':[{'path':'app.py','size':len(data),'sha256':'0'*64}]}
             (root/'update_config.json').write_text(json.dumps({'manifest_url':url}))
             with patch.object(updater,'_get',side_effect=lambda path,limit: json.dumps(body).encode() if path==url else data):
@@ -87,5 +87,12 @@ class UpdaterTests(unittest.TestCase):
                     updater.install(root,updater.check(root))
             self.assertEqual((root/'app.py').read_text(),'OLD')
 
+
+    def test_uncached_manifest_keeps_explicit_release_query(self):
+        from urllib.parse import urlsplit, parse_qs
+        url=updater._uncached_manifest_url('https://raw.githubusercontent.com/nakumaakuma-web/GORK/main/update-manifest.json?refresh=060')
+        params=parse_qs(urlsplit(url).query)
+        self.assertEqual(params['refresh'],['060'])
+        self.assertTrue(params['pes_check'][0].isdigit())
 
 if __name__=='__main__':unittest.main(verbosity=2)

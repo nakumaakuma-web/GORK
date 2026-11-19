@@ -329,3 +329,196 @@ $('installUpdate').onclick=async()=>{
 };
 
 setTimeout(checkUpdate,1200);
+
+
+// PES_MOTION_DIRECTOR_V070: build shot-by-shot RU/EN motion instructions and optionally render via local FramePack F1.
+let motionResult=null, motionLastDuration=5, motionRendering=false;
+function motionMessage(msg,type=''){
+  const el=$('motionStatus');el.textContent=msg;el.className='dirStatus'+(type?' '+type:'');
+}
+function motionRenderMessage(msg,type=''){
+  const el=$('motionRenderStatus');el.textContent=msg;el.className='dirStatus'+(type?' '+type:'');
+}
+function motionBeat(start,end,action=''){
+  const box=document.createElement('div');box.className='dirBeat';
+  const row=document.createElement('div');row.className='dirBeatTop';
+  const from=document.createElement('label');from.textContent='С';
+  const input1=document.createElement('input');input1.type='number';input1.min='0';input1.step='0.1';input1.value=String(start);input1.className='beatFrom';
+  const to=document.createElement('label');to.textContent='До';
+  const input2=document.createElement('input');input2.type='number';input2.min='0';input2.step='0.1';input2.value=String(end);input2.className='beatTo';
+  const del=document.createElement('button');del.className='btn secondary';del.textContent='Убрать';del.type='button';
+  del.onclick=()=>{if(document.querySelectorAll('#motionBeats .dirBeat').length>1)box.remove();else motionMessage('Оставь хотя бы одно действие.','error');};
+  from.append(input1);to.append(input2);row.append(from,to,del);
+  const content=document.createElement('textarea');content.className='dirInput beatAction';content.rows=2;content.placeholder='Что конкретно меняется в движении и положении персонажа?';content.value=action;
+  box.append(row,content);$('motionBeats').appendChild(box);
+}
+function motionBeatDefaults(duration){
+  $('motionBeats').replaceChildren();const values=[0,.3,.7,1].map(x=>Number((x*duration).toFixed(1)));
+  motionBeat(values[0],values[1],'');motionBeat(values[1],values[2],'');motionBeat(values[2],values[3],'');
+}
+motionBeatDefaults(5);
+$('motionDuration').onchange=()=>{
+  const duration=Number($('motionDuration').value), old=motionLastDuration||5;
+  for(const row of $('motionBeats').querySelectorAll('.dirBeat')){
+    for(const cls of ['beatFrom','beatTo']){
+      const inp=row.querySelector('.'+cls);
+      inp.value=String(Number((Math.max(0,Number(inp.value))*duration/old).toFixed(1)));
+    }
+  }
+  motionLastDuration=duration;
+};
+$('motionAddBeat').onclick=()=>{
+  const rows=$('motionBeats').querySelectorAll('.dirBeat');if(rows.length>=5){motionMessage('Максимум 5 этапов, чтобы промпт оставался понятным.','error');return;}
+  const duration=Number($('motionDuration').value);
+  const prev=Number(rows[rows.length-1].querySelector('.beatTo').value);
+  if(prev>=duration){motionMessage('Чтобы добавить этап, сначала сократи предыдущие временные интервалы.','error');return;}
+  motionBeat(prev,duration,'');
+};
+$('motionFromAnalysis').onclick=()=>{
+  if(!latest?.sections){motionMessage('Сначала выполни анализ исходной фотографии или загрузи сохранённый JSON.','error');return;}
+  const sc=latest.sections;
+  $('motionIdentity').value=[sc.appearance_ru,sc.anatomy_ru,sc.clothing_ru].filter(Boolean).join('\n').slice(0,3500);
+  $('motionScene').value=[sc.pose_ru,sc.style_ru].filter(Boolean).join('\n').slice(0,2500);
+  motionMessage('Внешность, анатомия, одежда и поза перенесены из анализа. Отредактируй и опиши движения по времени.','success');
+};
+function motionProject(){
+  const beats=[...document.querySelectorAll('#motionBeats .dirBeat')].map(row=>({
+    start:Number(row.querySelector('.beatFrom').value),
+    end:Number(row.querySelector('.beatTo').value),
+    action:row.querySelector('.beatAction').value.trim()
+  }));
+  return {
+    style:$('motionStyle').value,camera:$('motionCamera').value,pace:$('motionPace').value,
+    duration:Number($('motionDuration').value),rating:$('motionAdult').checked?'adult':'standard',
+    adults_confirmed:$('motionAdultConfirm').checked,
+    identity_ru:$('motionIdentity').value,scene_ru:$('motionScene').value,
+    initial_ru:'',direction_ru:$('motionDirection').value,
+    manual_en:$('motionManualEn').value,beats
+  };
+}
+function motionRefreshRenderButton(){
+  $('motionRender').disabled=motionRendering||!$('motionOutputEn').value.trim()||!chosen;
+}
+$('motionOutputEn').addEventListener('input',motionRefreshRenderButton);
+$('motionBuild').onclick=async()=>{
+  const btn=$('motionBuild');btn.disabled=true;
+  motionMessage('Проверка временной шкалы. '+($('motionManualEn').value.trim()?'Использую твой готовый английский текст.':'Qwen переводит и составляет последовательность движений на английском…'));
+  try{
+    const resp=await fetch('/api/motion/build',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(motionProject())});
+    const result=await resp.json();if(!resp.ok)throw Error(result.error||'Ошибка '+resp.status);
+    motionResult=result;
+    $('motionOutputRu').value=result.motion_ru;
+    $('motionOutputEn').value=result.motion_en;
+    $('motionOutputTimeline').value=result.shotlist_ru;
+    $('motionSave').disabled=false;
+    motionRefreshRenderButton();
+    motionMessage('Готово: Motion Prompt RU / EN и хронология. Проверь движения и стороны тела перед запуском FramePack. '+(result.manual_input?'Qwen не запускалась.':'Текст перевела локальная Qwen.'),'success');
+  }catch(err){motionMessage('Ошибка сборки: '+err.message,'error');}
+  finally{btn.disabled=false;}
+};
+$('motionCopy').onclick=async()=>{
+  const text=$('motionOutputEn').value;
+  if(!text.trim()){motionMessage('Сначала составь FramePack EN или введи его вручную.','error');return;}
+  try{await navigator.clipboard.writeText(text);motionMessage('FramePack EN скопирован.','success');}
+  catch{const el=$('motionOutputEn');el.focus();el.select();motionMessage('Выделила текст — скопируй Ctrl+C.');}
+};
+$('motionLoad').onclick=()=>$('motionLoadFile').click();
+$('motionLoadFile').onchange=async e=>{
+  const f=e.target.files[0];e.target.value='';if(!f)return;
+  try{
+    if(f.size>750000)throw Error('Файл проекта слишком большой.');
+    const obj=JSON.parse(await f.text());
+    if(obj.kind!=='motion_director'||!obj.project||!Array.isArray(obj.project.beats))throw Error('Нужен JSON проекта режиссёра анимации.');
+    const p=obj.project;
+    for(const [key,element] of [['style','motionStyle'],['camera','motionCamera'],['pace','motionPace'],['duration','motionDuration']]){
+      if(p[key]!==undefined)$(element).value=String(p[key]);
+    }
+    motionLastDuration=Number($('motionDuration').value);
+    $('motionIdentity').value=p.identity_ru||'';$('motionScene').value=p.scene_ru||'';
+    $('motionDirection').value=p.direction_ru||'';$('motionManualEn').value=p.manual_en||'';
+    $('motionAdult').checked=p.rating==='adult';$('motionAdultConfirm').checked=!!p.adults_confirmed;
+    $('motionBeats').replaceChildren();
+    p.beats.slice(0,5).forEach(x=>motionBeat(Number(x.start),Number(x.end),String(x.action||'')));
+    if(!p.beats.length)motionBeatDefaults(motionLastDuration);
+    motionResult=obj.result||null;
+    $('motionOutputEn').value=motionResult?.motion_en||'';
+    $('motionOutputRu').value=motionResult?.motion_ru||'';
+    $('motionOutputTimeline').value=motionResult?.shotlist_ru||'';
+    $('motionSave').disabled=!motionResult;
+    motionRefreshRenderButton();
+    motionMessage('Проект загружен. Проверь шаги и исходный кадр перед генерацией.','success');
+  }catch(error){motionMessage('Не удалось открыть проект: '+error.message,'error');}
+};
+$('motionSave').onclick=()=>{
+  const obj={version:'0.7.0',kind:'motion_director',source_filename:chosen?.name||null,
+    project:motionProject(),result:motionResult};
+  download('motion_director_project.json',JSON.stringify(obj,null,2),'application/json;charset=utf-8');
+  motionMessage('Проект с хронологией и промптами сохранён в JSON.','success');
+};
+$('motionExport').onclick=()=>{
+  const data='===FRAMEPACK_EN===\n'+$('motionOutputEn').value+'\n\n===MOTION_RU===\n'+$('motionOutputRu').value+'\n\n===TIMELINE_RU===\n'+$('motionOutputTimeline').value;
+  download('framepack_motion_prompt.txt',data,'text/plain;charset=utf-8');
+  motionMessage('TXT с промптами и хронологией сохранён.','success');
+};
+function motionFPUrl(){
+  const url=$('motionFramepackUrl').value.trim();
+  if(!/^http:\/\/(?:127\.0\.0\.1|localhost):\d{2,5}\/?$/.test(url))throw Error('Адрес должен быть локальным: http://127.0.0.1:7860');
+  return url;
+}
+$('motionFramepackOpen').onclick=()=>{
+  try{window.open(motionFPUrl(),'_blank','noopener,noreferrer');}
+  catch(e){motionRenderMessage(e.message,'error');}
+};
+$('motionFramepackProbe').onclick=async()=>{
+  const b=$('motionFramepackProbe');b.disabled=true;motionRenderMessage('Проверка локального API FramePack…');
+  try{
+    const resp=await fetch('/api/framepack/probe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:motionFPUrl()})});
+    const info=await resp.json();if(!resp.ok)throw Error(info.error||'Ошибка '+resp.status);
+    motionRenderMessage('FramePack подключён: '+info.url+' · API '+info.api+'. Можно отправлять изображение и Motion Prompt.','success');
+  }catch(err){motionRenderMessage('Нет подключения: '+err.message,'error');}
+  finally{b.disabled=false;}
+};
+async function motionStartingImage(){
+  if(!chosen)throw Error('Выбери исходное изображение.');
+  if(type==='photo'){const frames=await framesImage();return frames[0].data;}
+  if(type==='video'){
+    const v=$('videoPreview');
+    if(!v||v.readyState<2||!v.videoWidth)throw Error('Открой видео в плеере и выбери кадр, который станет начальным изображением.');
+    return canvasData(v,v.videoWidth,v.videoHeight,1200);
+  }
+  throw Error('Нет подходящего исходного кадра.');
+}
+async function motionStreamRender(payload){
+  const resp=await fetch('/api/framepack/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  if(!resp.ok){let msg;try{msg=(await resp.json()).error;}catch{msg='HTTP '+resp.status;}throw Error(msg);}
+  const reader=resp.body.getReader(),decoder=new TextDecoder();let remains='',completed=false;
+  while(true){const {value,done}=await reader.read();remains+=decoder.decode(value||new Uint8Array(),{stream:!done});let idx;
+    while((idx=remains.indexOf('\n'))>=0){const line=remains.slice(0,idx).trim();remains=remains.slice(idx+1);if(!line)continue;
+      const event=JSON.parse(line);
+      if(event.event==='stage')motionRenderMessage(event.message);
+      if(event.event==='error')throw Error(event.message);
+      if(event.event==='done'){
+        completed=true;const v=$('motionRenderedVideo');v.src=event.video_url;v.style.display='block';
+        const a=$('motionRenderedDownload');a.href=event.video_url;a.download=event.filename||'framepack.mp4';a.style.display='inline-block';
+        motionRenderMessage('Готово. FramePack вернул MP4, видео сохранено локально в папке outputs приложения.','success');
+      }
+    }
+    if(done)break;
+  }
+  if(!completed)throw Error('Поток FramePack завершился без подтверждения готового видео.');
+}
+$('motionRender').onclick=async()=>{
+  if(motionRendering)return;
+  try{
+    const prompt=$('motionOutputEn').value.trim();if(prompt.length<10)throw Error('Составь FramePack EN перед запуском.');
+    if($('motionAdult').checked&&!$('motionAdultConfirm').checked)throw Error('Для категории 18+ требуется подтвердить совершеннолетие персонажей.');
+    if(!confirm('Запустить локальный FramePack? Генерация может занять много времени и использовать всю доступную VRAM. Если не хватает памяти, сначала останови Qwen.'))return;
+    const image=await motionStartingImage();
+    motionRendering=true;motionRefreshRenderButton();
+    $('motionRenderedVideo').style.display='none';$('motionRenderedDownload').style.display='none';
+    motionRenderMessage('Исходный кадр подготовлен. Проверка FramePack…');
+    await motionStreamRender({url:motionFPUrl(),prompt,image,duration:Number($('motionDuration').value),
+      seed:Number($('motionSeed').value),teacache:$('motionTeaCache').checked});
+  }catch(err){motionRenderMessage('Ошибка генерации: '+err.message,'error');}
+  finally{motionRendering=false;motionRefreshRenderButton();}
+};

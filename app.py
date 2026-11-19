@@ -603,6 +603,324 @@ def validate_images(images):
             raise ValueError('Слишком большой кадр — уменьшите разрешение.')
 
 
+
+# PES_MOTION_DIRECTOR_V070: image-to-video director. All endpoints stay on loopback.
+import base64
+import datetime
+import mimetypes
+
+_MOTION_STYLES = {
+    'anime': ('Рисованное аниме: стабильная толщина контуров, чистые линии, постоянные формы глаз и причёски, cel-shading.',
+              '2D anime illustration with stable crisp linework, consistent eye design, character proportions and cel shading; avoid photorealistic skin.'),
+    'semi': ('Полуреализм 2.5D: неизменная узнаваемость лица, волосы, материалы и рисованная текстура; без перехода к фотореализму.',
+             'Consistent semi-realistic 2.5D illustration, preserving facial identity, material rendering, proportions and painterly detail without changing into a photograph.'),
+    'realistic': ('Реализм: естественная работа мышц, рук и суставов, стабильная структура лица, материалы, свет и перспектива.',
+                  'Consistent photographic realism, stable facial identity and anatomy, naturally articulated limbs and hands, physically coherent light and perspective.'),
+}
+_MOTION_CAMERAS = {
+    'locked': ('камера неподвижна', 'locked-off camera'),
+    'push': ('очень плавное приближение камеры', 'slow gentle camera push-in'),
+    'pan': ('плавная горизонтальная панорама камеры', 'gentle controlled horizontal camera pan'),
+    'follow': ('камера плавно сопровождает движение персонажа', 'smooth camera tracking following the subject'),
+}
+_MOTION_PACES = {
+    'gentle': ('спокойное, размеренное движение', 'gentle, deliberate motion'),
+    'natural': ('естественное непрерывное движение', 'natural continuous movement'),
+    'dynamic': ('выразительное, энергичное, но управляемое движение', 'expressive, energetic but controlled motion'),
+}
+
+
+def validate_motion_project(data: dict) -> dict:
+    if not isinstance(data, dict):
+        raise ValueError('Нужен объект проекта анимации.')
+    style = data.get('style', 'semi')
+    camera = data.get('camera', 'locked')
+    pace = data.get('pace', 'natural')
+    if style not in _MOTION_STYLES or camera not in _MOTION_CAMERAS or pace not in _MOTION_PACES:
+        raise ValueError('Неизвестный стиль, скорость или камера.')
+    try:
+        duration = float(data.get('duration', 5))
+    except (ValueError, TypeError):
+        raise ValueError('Некорректная длительность.')
+    if not 2 <= duration <= 15 or not duration == duration:
+        raise ValueError('Длительность должна быть от 2 до 15 секунд.')
+    rating = data.get('rating', 'standard')
+    if rating not in ('standard', 'adult'):
+        raise ValueError('Неизвестная категория контента.')
+    if rating == 'adult' and data.get('adults_confirmed') is not True:
+        raise ValueError('Для режима 18+ необходимо подтвердить совершеннолетие всех персонажей.')
+    fields = {}
+    for key, limit in (('identity_ru', 3500), ('scene_ru', 2500), ('initial_ru', 1500), ('direction_ru', 3000), ('manual_en', 3800)):
+        value = data.get(key, '')
+        if not isinstance(value, str) or len(value) > limit:
+            raise ValueError('Некорректное или слишком длинное поле: '+key)
+        fields[key] = value.strip()
+    beats = data.get('beats', [])
+    if not isinstance(beats, list) or not 1 <= len(beats) <= 5:
+        raise ValueError('Нужно от 1 до 5 последовательных действий.')
+    checked = []
+    previous_end = -1.0
+    for index, beat in enumerate(beats):
+        if not isinstance(beat, dict):
+            raise ValueError('Некорректное действие №'+str(index+1))
+        try:
+            start, end = float(beat['start']), float(beat['end'])
+        except (ValueError, TypeError, KeyError):
+            raise ValueError('У каждого действия должны быть время начала и конца.')
+        action = beat.get('action', '')
+        if not isinstance(action, str) or not action.strip() or len(action) > 1000:
+            raise ValueError('Действие №'+str(index+1)+' пустое или слишком длинное.')
+        if not (0 <= start < end <= duration+0.001) or start < previous_end-0.001:
+            raise ValueError('Действия должны идти по времени без наложений и быть внутри длительности.')
+        previous_end = end
+        checked.append({'start': round(start, 2), 'end': round(end, 2), 'action': action.strip()})
+    return {'style':style,'camera':camera,'pace':pace,'duration':duration,'rating':rating,
+            'adults_confirmed':rating=='adult','beats':checked,**fields}
+
+
+def motion_shotlist(project: dict) -> str:
+    return '\n'.join(f"{b['start']:g}–{b['end']:g} с: {b['action']}" for b in project['beats'])
+
+
+def motion_brief(project: dict) -> str:
+    style_ru, _ = _MOTION_STYLES[project['style']]
+    camera_ru, _ = _MOTION_CAMERAS[project['camera']]
+    pace_ru, _ = _MOTION_PACES[project['pace']]
+    return ('Внешность: '+(project['identity_ru'] or 'определяется исходным изображением')+'\n'
+            'Сцена: '+(project['scene_ru'] or 'как на исходном изображении')+'\n'
+            'Начальная поза: '+(project['initial_ru'] or 'как на исходном изображении')+'\n'
+            'Стиль: '+style_ru+'\nКамера: '+camera_ru+'\nТемп: '+pace_ru+'\n'
+            'Режиссёрские пожелания: '+(project['direction_ru'] or 'без смены сцены')+'\n'
+            'Действия по времени:\n'+motion_shotlist(project))
+
+
+def _motion_extract(text: str, field: str) -> str:
+    m = re.search(r'^\s*={3}\s*'+re.escape(field)+r'\s*={3}\s*$', text, re.I|re.M)
+    if not m:
+        return ''
+    n = re.search(r'^\s*={3}\s*[A-Z_]+\s*={3}\s*$', text[m.end():], re.I|re.M)
+    return text[m.end():m.end()+n.start() if n else len(text)].strip()
+
+
+def build_motion_director(data: dict) -> dict:
+    project = validate_motion_project(data)
+    style_ru, style_en = _MOTION_STYLES[project['style']]
+    camera_ru, camera_en = _MOTION_CAMERAS[project['camera']]
+    pace_ru, pace_en = _MOTION_PACES[project['pace']]
+    # The user can supply an English prompt to skip Qwen; this is fully local and instant.
+    if project['manual_en']:
+        motion_en = project['manual_en']
+        motion_ru = ('Режиссёрская последовательность (исходный текст пользователя):\n'+motion_shotlist(project)
+                     +'\nСтиль: '+style_ru+'\nКамера: '+camera_ru+'\nТемп: '+pace_ru)
+        translated = False
+    else:
+        instruction = '''Ты редактор коротких motion prompts для FramePack-F1 (image-to-video).
+ИСПОЛЬЗУЙ только информацию из проекта ниже. Источником внешности служит начальный кадр; не придумывай и не меняй личность, сцену, одежду, анатомию, аксессуары.
+Важнее движения и ПОРЯДОК ДЕЙСТВИЙ, чем длинное статичное описание внешности.
+Промпт на английском должен состоять из 2–5 связных предложений, в настоящем времени, без разговоров о генераторах, без отвлечённых тегов, без длинных списков. Опиши один непрерывный кадр, мягкие физические переходы, конкретные движения тела и камеры. Сохрани все заданные действия в указанном порядке. Не добавляй неописанные действия. Если временная шкала важна, используй first / then / finally вместо жёстких таймкодов.
+Точное значение стороны персонажа не меняй; не переключай левую и правую сторону, не добавляй смену сцены. При неясности оставь сторону неопределённой.
+Собери точный эквивалент на русском и английском. Английский промпт НЕ должен быть русским транслитом.
+Формат ответа — строго два раздела:
+===MOTION_RU===
+[русский motion prompt]
+===MOTION_EN===
+[English motion prompt]
+
+СТИЛЬ: {style}
+СТИЛЬ EN: {style_en}
+КАМЕРА: {camera}
+КАМЕРА EN: {camera_en}
+ТЕМП: {pace}
+ТЕМП EN: {pace_en}
+ДЛИТЕЛЬНОСТЬ: {duration:g} сек
+ПРОЕКТ:\n{brief}
+'''.format(style=style_ru,style_en=style_en,camera=camera_ru,camera_en=camera_en,
+           pace=pace_ru,pace_en=pace_en,duration=project['duration'],brief=motion_brief(project))
+        answer = _llama_request(instruction, [], 1200,
+                                system_message='Пиши строго два законченных раздела ===MOTION_RU=== и ===MOTION_EN===, без объяснений.')
+        motion_en = _motion_extract(answer, 'MOTION_EN')
+        motion_ru = _motion_extract(answer, 'MOTION_RU')
+        if not motion_en or not motion_ru or not prompt_language_matches(motion_en,'en') or not prompt_language_matches(motion_ru,'ru'):
+            raise ValueError('Qwen не сформировала корректную пару RU/EN. Проверь исходные инструкции и повтори сборку.')
+        translated = True
+    # FramePack F1 has a hidden NEGATIVE field, explicitly marked "Not used".
+    # Therefore, stability restrictions should be IN the positive motion prompt.
+    stability_en = ('Keep the same person, facial identity, hairstyle, clothing, body proportions, '
+                    'number of limbs, environment, light direction, art style and colors throughout the shot. '
+                    'Avoid face morphing, rubber limbs, flickering, duplicate fingers, abrupt cuts or new objects.')
+    final_en = motion_en.strip()
+    if style_en.lower()[:10] not in final_en.lower() and 'consistent' not in final_en.lower():
+        final_en += ' '+style_en
+    if camera_en.lower() not in final_en.lower():
+        final_en += ' '+camera_en.capitalize()+'.'
+    if pace_en.lower() not in final_en.lower():
+        final_en += ' '+pace_en.capitalize()+'.'
+    final_en += ' Maintain stable character identity, proportions, clothing, and visual style across all frames.'
+    if len(final_en) > 6500:
+        raise ValueError('Слишком длинный результат для FramePack.')
+    return {'project':project, 'motion_ru':motion_ru, 'motion_en':final_en,
+            'stability_en':stability_en, 'shotlist_ru':motion_shotlist(project),
+            'manual_input':not translated, 'note':'Промпт описывает планируемые движения, а не реально наблюдённые. FramePack F1 использует исходный кадр. Отрицательное поле в официальном GUI скрыто и отмечено Not used.'}
+
+
+def _framepack_origin(url: str) -> str:
+    if not isinstance(url, str) or len(url) > 70:
+        raise ValueError('Некорректный адрес FramePack.')
+    parsed = urllib.parse.urlsplit(url.strip())
+    if parsed.scheme != 'http' or parsed.hostname not in ('127.0.0.1', 'localhost') or not parsed.port or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in ('', '/'):
+        raise ValueError('Допускается только локальный FramePack: http://127.0.0.1:7860')
+    if parsed.port in (8765, 8080):
+        raise ValueError('Указан порт Prompt Extractor или Qwen, а не FramePack.')
+    # Always access loopback literal; no DNS or external hosts.
+    return 'http://127.0.0.1:'+str(parsed.port)
+
+
+def _framepack_config(origin: str) -> tuple[str, dict]:
+    req = urllib.request.Request(origin+'/config', headers={'User-Agent':'PromptExtractorStudio/0.7'})
+    with urllib.request.urlopen(req, timeout=7) as resp:
+        cfg = json.loads(resp.read(250_001))
+    deps = cfg.get('dependencies', [])
+    if not isinstance(deps, list):
+        raise ValueError('Сервис не похож на поддерживаемый интерфейс Gradio.')
+    candidates = [x for x in deps if isinstance(x, dict) and len(x.get('inputs',[])) == 13
+                  and len(x.get('outputs',[])) == 6 and isinstance(x.get('api_name'), str)]
+    if not candidates:
+        raise ValueError('Подключение найдено, но схема FramePack F1 отличается. Запуск заблокирован; обновления модели не требуются.')
+    name = candidates[0]['api_name'].strip('/')
+    if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_-]{0,80}', name):
+        raise ValueError('Некорректное имя API FramePack.')
+    return name, cfg
+
+
+def _framepack_http_json(url: str, data: dict, timeout=25) -> dict:
+    body=json.dumps(data, ensure_ascii=False).encode('utf-8')
+    req=urllib.request.Request(url, data=body, method='POST', headers={'Content-Type':'application/json'})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read(1_000_001))
+
+
+def _framepack_upload(origin: str, image_data: str) -> str:
+    if not isinstance(image_data, str) or not re.fullmatch(r'data:image/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]{50,11000000}',image_data):
+        raise ValueError('Нужен исходный кадр в PNG, JPG или WebP (до 8 МБ).')
+    mimetype=image_data.split(';')[0][5:]
+    raw=base64.b64decode(image_data.split(',',1)[1],validate=True)
+    if len(raw)>8_000_000:
+        raise ValueError('Исходный кадр слишком большой.')
+    filename={'image/png':'source.png','image/jpeg':'source.jpg','image/webp':'source.webp'}[mimetype]
+    boundary='----PES'+uuid.uuid4().hex
+    body=(('--'+boundary+'\r\nContent-Disposition: form-data; name="files"; filename="'+filename+'"\r\nContent-Type: '+mimetype+'\r\n\r\n').encode('ascii')
+          +raw+('\r\n--'+boundary+'--\r\n').encode('ascii'))
+    req=urllib.request.Request(origin+'/gradio_api/upload', data=body, method='POST',
+        headers={'Content-Type':'multipart/form-data; boundary='+boundary})
+    with urllib.request.urlopen(req,timeout=60) as resp:
+        paths=json.loads(resp.read(200000))
+    if not isinstance(paths,list) or not paths or not isinstance(paths[0],str):
+        raise RuntimeError('FramePack не вернул путь загруженного изображения.')
+    return paths[0]
+
+
+def _framepack_sse_url(origin: str, api: str, event_id: str) -> str:
+    if not re.fullmatch(r'[a-zA-Z0-9_-]{3,100}', event_id):
+        raise ValueError('FramePack вернул некорректный идентификатор события.')
+    return origin+'/gradio_api/call/'+api+'/'+event_id
+
+
+def _framepack_result_file(output, origin: str) -> str:
+    # Gradio video output is typically data[0] with a video/path/url structure.
+    if isinstance(output, list):
+        if not output:
+            return ''
+        output=output[0]
+    if isinstance(output, dict):
+        if 'video' in output:
+            output=output['video']
+        if isinstance(output,dict):
+            url=output.get('url','')
+            path=output.get('path','')
+            if isinstance(url,str) and url:
+                p=urllib.parse.urlsplit(url)
+                if p.scheme in ('http','https') and p.hostname in ('127.0.0.1','localhost') and p.port == urllib.parse.urlsplit(origin).port and p.path.startswith(('/gradio_api/file=','/file=')):
+                    return origin+p.path+('?' + p.query if p.query else '')
+            if isinstance(path,str) and path:
+                return origin+'/gradio_api/file='+urllib.parse.quote(path,safe='')
+    if isinstance(output,str) and output.endswith('.mp4'):
+        return origin+'/gradio_api/file='+urllib.parse.quote(output,safe='')
+    return ''
+
+
+def _framepack_save_result(url: str) -> str:
+    # The URL is created exclusively from a validated loopback Gradio result.
+    directory=ROOT/'outputs'
+    directory.mkdir(exist_ok=True)
+    name='framepack_'+datetime.datetime.now().strftime('%Y%m%d_%H%M%S')+'_'+uuid.uuid4().hex[:8]+'.mp4'
+    target=directory/name
+    temp=directory/(name+'.part')
+    try:
+        req=urllib.request.Request(url,headers={'User-Agent':'PromptExtractorStudio/0.7'})
+        with urllib.request.urlopen(req,timeout=180) as resp, open(temp,'wb') as f:
+            size=0
+            while True:
+                chunk=resp.read(1024*1024)
+                if not chunk:break
+                size+=len(chunk)
+                if size>256*1024*1024:
+                    raise ValueError('Видео превысило лимит сохранения 256 МБ.')
+                f.write(chunk)
+        if size<100:
+            raise ValueError('FramePack вернул пустой видеофайл.')
+        temp.replace(target)
+        return name
+    finally:
+        if temp.exists():temp.unlink()
+
+
+def framepack_render(data: dict, emit):
+    origin=_framepack_origin(data.get('url','http://127.0.0.1:7860'))
+    prompt=data.get('prompt','')
+    if not isinstance(prompt,str) or not 10<=len(prompt)<=7000:
+        raise ValueError('Нужен готовый FramePack EN, от 10 до 7000 символов.')
+    duration=float(data.get('duration',5))
+    if not 2<=duration<=15:
+        raise ValueError('Длительность должна быть от 2 до 15 секунд.')
+    seed=int(data.get('seed',31337))
+    if seed<0 or seed>2147483647:raise ValueError('Недопустимый seed.')
+    emit('stage',message='Проверка локального FramePack и доступности API…')
+    api,_cfg=_framepack_config(origin)
+    emit('stage',message='Передача исходного изображения в FramePack…')
+    img_path=_framepack_upload(origin,data.get('image',''))
+    file_obj={'path':img_path,'orig_name':'source.png','meta':{'_type':'gradio.FileData'}}
+    # Official FramePack F1 demo_gradio_f1.py: 13 positional arguments.
+    args=[file_obj,prompt,'',seed,duration,9,25,1.0,10.0,0.0,6.0,bool(data.get('teacache',False)),16]
+    emit('stage',message='Запуск генерации в локальном FramePack…')
+    result=_framepack_http_json(origin+'/gradio_api/call/'+api,{'data':args},timeout=40)
+    eid=result.get('event_id','')
+    sse_url=_framepack_sse_url(origin,api,eid)
+    emit('stage',message='FramePack генерирует видео; ожидание результата (могут появляться промежуточные превью)…')
+    request=urllib.request.Request(sse_url,headers={'Accept':'text/event-stream'})
+    output=None
+    # Long-running response is delegated to Gradio's SSE. Do not fake progress.
+    with urllib.request.urlopen(request,timeout=3600) as stream:
+        event=''
+        for raw in stream:
+            line=raw.decode('utf-8',errors='replace').rstrip('\r\n')
+            if line.startswith('event:'):
+                event=line[6:].strip()
+            elif line.startswith('data:'):
+                if event in ('generating','complete'):
+                    payload=json.loads(line[5:].strip())
+                    if isinstance(payload,list) and payload and _framepack_result_file(payload,origin):
+                        output=payload
+                elif event=='error':
+                    raise RuntimeError('FramePack сообщил об ошибке: '+line[5:300].strip())
+                if event=='complete':break
+    if output is None:
+        raise RuntimeError('FramePack завершил задачу без итогового MP4. Проверь окно FramePack и его папку outputs.')
+    emit('stage',message='Готово. Сохранение MP4 в папку outputs приложения…')
+    remote=_framepack_result_file(output,origin)
+    filename=_framepack_save_result(remote)
+    emit('done',video_url='/api/framepack/result/'+filename,filename=filename)
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = 'PromptExtractorStudio/' + updater.VERSION
 
@@ -628,6 +946,40 @@ class Handler(BaseHTTPRequestHandler):
             return self._reply(200, data, 'text/html; charset=utf-8')
         if path == '/ui.js':
             return self._reply(200, (ROOT / 'ui' / 'ui.js').read_bytes(), 'text/javascript; charset=utf-8')
+        if path.startswith('/api/framepack/result/'):
+            name=path.rsplit('/',1)[-1]
+            if not re.fullmatch(r'framepack_[0-9]{8}_[0-9]{6}_[0-9a-f]{8}\.mp4',name):
+                return self._reply(404,b'{}')
+            file=ROOT/'outputs'/name
+            if not file.is_file():
+                return self._reply(404,b'{}')
+            total=file.stat().st_size
+            match=re.fullmatch(r'bytes=(\d*)-(\d*)',self.headers.get('Range','')) if self.headers.get('Range') else None
+            start,end=0,total-1
+            if match:
+                if match.group(1):
+                    start=int(match.group(1));end=int(match.group(2)) if match.group(2) else end
+                elif match.group(2):
+                    start=max(0,total-int(match.group(2)))
+                end=min(end,total-1)
+                if start> end or start>=total:
+                    self.send_response(416);self.send_header('Content-Range',f'bytes */{total}');self.end_headers();return
+            self.send_response(206 if match else 200)
+            self.send_header('Content-Type','video/mp4')
+            self.send_header('Cache-Control','no-store')
+            self.send_header('Accept-Ranges','bytes')
+            self.send_header('Content-Length',str(end-start+1))
+            if match:self.send_header('Content-Range',f'bytes {start}-{end}/{total}')
+            self.end_headers()
+            try:
+                with file.open('rb') as source:
+                    source.seek(start);left=end-start+1
+                    while left:
+                        block=source.read(min(left,1024*1024))
+                        if not block:break
+                        self.wfile.write(block);left-=len(block)
+            except (BrokenPipeError,ConnectionResetError):pass
+            return
         if path == '/api/update/check':
             try:
                 result = updater.check(ROOT)
@@ -655,6 +1007,60 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urllib.parse.urlsplit(self.path).path
+        if path in ('/api/motion/build','/api/framepack/probe','/api/framepack/generate'):
+            origin_header=self.headers.get('Origin','')
+            valid_origins={'http://127.0.0.1:%s'%self.server.server_address[1],
+                           'http://localhost:%s'%self.server.server_address[1]}
+            if origin_header not in valid_origins or self.headers.get('Content-Type','').split(';')[0].strip() != 'application/json':
+                return self._reply(403,b'{"error":"Local UI origin and JSON required"}')
+            try:
+                size=int(self.headers.get('Content-Length','0'))
+                if not 0<size<12_500_000:
+                    raise ValueError('Данные проекта слишком большие.')
+                data=json.loads(self.rfile.read(size))
+                if not isinstance(data,dict):
+                    raise ValueError('Некорректные данные проекта.')
+            except (ValueError,TypeError,json.JSONDecodeError) as exc:
+                return self._reply(400,json.dumps({'error':str(exc)},ensure_ascii=False).encode())
+            if path=='/api/motion/build':
+                needs_qwen=not bool(data.get('manual_en',''))
+                if needs_qwen and not _gpu_job_lock.acquire(blocking=False):
+                    return self._reply(429,json.dumps({'error':'Qwen занята другим анализом.'},ensure_ascii=False).encode())
+                try:
+                    result=build_motion_director(data)
+                    return self._reply(200,json.dumps(result,ensure_ascii=False).encode())
+                except ValueError as exc:
+                    return self._reply(400,json.dumps({'error':str(exc)},ensure_ascii=False).encode())
+                except Exception as exc:
+                    return self._reply(500,json.dumps({'error':'Не удалось составить Motion Prompt: '+str(exc)[:280]},ensure_ascii=False).encode())
+                finally:
+                    if needs_qwen:_gpu_job_lock.release()
+            if path=='/api/framepack/probe':
+                try:
+                    endpoint=_framepack_origin(data.get('url','http://127.0.0.1:7860'))
+                    api,_cfg=_framepack_config(endpoint)
+                    return self._reply(200,json.dumps({'connected':True,'api':api,'url':endpoint}).encode())
+                except Exception as exc:
+                    return self._reply(400,json.dumps({'error':str(exc)[:290]},ensure_ascii=False).encode())
+            if not _gpu_job_lock.acquire(blocking=False):
+                return self._reply(429,json.dumps({'error':'Другая задача использует Qwen или FramePack; дождись завершения.'},ensure_ascii=False).encode())
+            self.send_response(200)
+            self.send_header('Content-Type','application/x-ndjson; charset=utf-8')
+            self.send_header('Cache-Control','no-store')
+            self.send_header('X-Content-Type-Options','nosniff')
+            self.end_headers()
+            def emit(event,**kw):
+                line=json.dumps({'event':event,**kw},ensure_ascii=False)+'\n'
+                self.wfile.write(line.encode('utf-8'))
+                self.wfile.flush()
+            try:
+                framepack_render(data,emit)
+            except Exception as exc:
+                try:emit('error',message=str(exc)[:320])
+                except (OSError,ConnectionResetError,BrokenPipeError):pass
+            finally:
+                _gpu_job_lock.release()
+            return
         if path == '/api/video/repair':
             origin = self.headers.get('Origin', '')
             allowed_origins = {'http://127.0.0.1:%s' % self.server.server_address[1],
@@ -913,7 +1319,7 @@ def main():
     args = parser.parse_args()
     server = ThreadingHTTPServer(('127.0.0.1', args.port), Handler)
     url = f'http://127.0.0.1:{args.port}'
-    print('Prompt Extractor Studio v0.6.0')
+    print('Prompt Extractor Studio v'+updater.VERSION)
     print('Интерфейс:', url)
     print('Qwen llama.cpp:', LLAMA)
     print('Работает локально. Для остановки нажми Ctrl+C.')
